@@ -171,13 +171,26 @@ class CatalogUseCases:
         errors = []
         parsed = []
         seen = {}
-        if tuple(display_name(h).lstrip("\ufeff") for h in headers) != IMPORT_HEADERS:
-            errors.append("Необходимы семь колонок официального списка в указанном порядке.")
+        aliases = {
+            "№": "внутренний № по списку",
+            "специализация/профилизация": "профилизация",
+            "№ зачётки": "номер зачётки",
+        }
+        keys = tuple(name_key(h.lstrip("\ufeff").replace("\ufffc", "")) for h in headers)
+        keys = tuple(aliases.get(key, key) for key in keys)
+        required = tuple(name_key(h) for h in IMPORT_HEADERS)
+        with_average = keys == (*required, "средний балл всех сессий")
+        if keys != required and not with_average:
+            errors.append(
+                "Необходимы семь колонок списка в указанном порядке; "
+                "дополнительно допускается «Средний балл всех сессий»."
+            )
+        width = 8 if with_average else 7
         if not rows:
             errors.append("В CSV нет строк студентов.")
         for source_row, values in enumerate(rows, 2):
-            if len(values) != 7:
-                errors.append(f"Строка {source_row}: необходимо семь полей.")
+            if len(values) != width:
+                errors.append(f"Строка {source_row}: необходимо {width} полей.")
                 continue
             try:
                 ordinal, course, group = (

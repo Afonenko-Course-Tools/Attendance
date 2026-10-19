@@ -91,13 +91,15 @@ def checked(control):
 
 class ImportPreviewDialog(FormDialog):
     def __init__(self, service, changed, parent=None):
-        super().__init__("Импорт семи колонок — предварительная проверка", parent)
+        super().__init__("Импорт студентов — предварительная проверка", parent)
         self.api, self.changed, self.plan = service.redesign, changed, None
         self.specialty_aliases, self.profile_aliases, self.group_choices = {}, {}, {}
         self.path = QLineEdit()
         self.year = spin(2000, 2200, date.today().year)
         self.encoding = combo([("UTF-8 BOM", "utf-8-sig"), ("Windows-1251", "cp1251")])
-        self.delimiter = combo([("Точка с запятой", ";"), ("Запятая", ","), ("Табуляция", "\t")])
+        self.delimiter = combo(
+            [("Авто", None), ("Запятая", ","), ("Точка с запятой", ";"), ("Табуляция", "\t")]
+        )
         self.form.addRow("Файл", self.path)
         browse = QPushButton("Выбрать CSV…")
         browse.clicked.connect(self.browse)
@@ -135,16 +137,29 @@ class ImportPreviewDialog(FormDialog):
         self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(False)
 
     def browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Семиколоночный CSV", "", "CSV (*.csv)")
+        path, _ = QFileDialog.getOpenFileName(self, "CSV списка студентов", "", "CSV (*.csv)")
         if path:
             self.path.setText(path)
 
     def review(self):
         raw = Path(self.path.text()).read_bytes()
+        text = raw.decode(self.encoding.currentData())
+        if not text.strip():
+            raise ValueError("Файл пуст")
+        delimiter = self.delimiter.currentData()
+        if delimiter is None:
+            # The required single header row identifies the separator without
+            # confusing quoted commas or multiline student fields with columns.
+            try:
+                delimiter = csv.Sniffer().sniff(text.splitlines()[0], delimiters=";,\t").delimiter
+            except csv.Error as exc:
+                raise ValueError(
+                    "Не удалось определить разделитель CSV. Выберите его явно."
+                ) from exc
         rows = list(
             csv.reader(
-                io.StringIO(raw.decode(self.encoding.currentData()), newline=""),
-                delimiter=self.delimiter.currentData(),
+                io.StringIO(text, newline=""),
+                delimiter=delimiter,
                 strict=True,
             )
         )
