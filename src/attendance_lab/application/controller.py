@@ -34,6 +34,7 @@ class CapturedScan:
     lesson_id: int
     uid: str
     at: datetime
+    session_id: int | None = None
 
 
 class AttendanceController:
@@ -54,6 +55,7 @@ class AttendanceController:
         self._pending: deque[CapturedScan] = deque()
         self._events: deque[ControllerEvent] = deque()
         self.active_lesson_id: int | None = None
+        self.active_session_id: int | None = None
         self._stopped = False
         self.reader = reader_factory(self._capture, self._status)
 
@@ -64,7 +66,9 @@ class AttendanceController:
             if self.active_lesson_id is None:
                 self._events.append(ControllerEvent("status", text="Регистрация закрыта"))
                 return
-            self._pending.append(CapturedScan(self.active_lesson_id, uid, at))
+            self._pending.append(
+                CapturedScan(self.active_lesson_id, uid, at, self.active_session_id)
+            )
 
     def _status(self, text: str) -> None:
         with self._lock:
@@ -87,8 +91,14 @@ class AttendanceController:
         while self._pending:
             scan = self._pending.popleft()
             try:
-                scan = CapturedScan(scan.lesson_id, normalize_uid(scan.uid), scan.at)
-                result = self.service.record_scan(scan.lesson_id, scan.uid, scan.at)
+                scan = CapturedScan(
+                    scan.lesson_id, normalize_uid(scan.uid), scan.at, scan.session_id
+                )
+                result = (
+                    self.service.redesign.record_session_scan(scan.session_id, scan.uid, scan.at)
+                    if scan.session_id is not None
+                    else self.service.record_scan(scan.lesson_id, scan.uid, scan.at)
+                )
             except Exception as exc:
                 logger.exception("Card registration failed for lesson %s", scan.lesson_id)
                 self._events.append(ControllerEvent("status", text=f"Ошибка регистрации: {exc}"))
@@ -103,6 +113,10 @@ class AttendanceController:
     def open_lesson(self, lesson_id: int) -> None:
         with self._lock:
             self._flush()
+            if self.active_session_id is not None:
+                self.service.redesign.close_session(self.active_session_id)
+                self.active_session_id = None
+                self.active_lesson_id = None
             self.service.open_lesson(lesson_id)
             self.active_lesson_id = lesson_id
             self._events.extend(
@@ -115,6 +129,10 @@ class AttendanceController:
     def close_lesson(self) -> None:
         with self._lock:
             self._flush()
+            if self.active_session_id is not None:
+                self.service.redesign.close_session(self.active_session_id)
+                self.active_session_id = None
+                self.active_lesson_id = None
             if self.active_lesson_id is not None:
                 self.service.close_lesson(self.active_lesson_id)
                 self.active_lesson_id = None
@@ -124,6 +142,34 @@ class AttendanceController:
                     ControllerEvent("public", PublicResult("closed", "Регистрация закрыта")),
                 ]
             )
+
+    def open_session(self, block_id: int, target_pair_ids: set[int]) -> None:
+        with self._lock:
+            self._flush()
+            if self.active_session_id is None and self.active_lesson_id is not None:
+                self.service.close_lesson(self.active_lesson_id)
+                self.active_lesson_id = None
+            session = self.service.redesign.open_session(block_id, target_pair_ids)
+            self.active_session_id = session.id
+            self.active_lesson_id = min(session.target_pair_ids)
+            self._events.extend(
+                [
+                    ControllerEvent("changed"),
+                    ControllerEvent("public", PublicResult("idle", "Приложите карту")),
+                ]
+            )
+
+    def close_session(self) -> None:
+        self.close_lesson()
+
+    def expand_session(self) -> None:
+        with self._lock:
+            self._flush()
+            if self.active_session_id is None:
+                raise ValueError("Сначала откройте регистрацию")
+            session = self.service.redesign.expand_session(self.active_session_id)
+            self.active_lesson_id = min(session.target_pair_ids)
+            self._events.append(ControllerEvent("changed"))
 
     def simulate(self, uid: str) -> None:
         # Capability is only installed by the demo adapter; real readers cannot be injected.

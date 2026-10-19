@@ -32,12 +32,45 @@ def default_database(demo: bool) -> Path:
     return base / "attendance-lab" / ("demo.sqlite3" if demo else "attendance.sqlite3")
 
 
+def migrate_database(database: Path, *, demo: bool) -> int:
+    """Upgrade an existing database without a display, under the application lock."""
+    from PySide6.QtCore import QCoreApplication, QLockFile
+
+    from attendance_lab.infrastructure.sqlite import SCHEMA_VERSION, SQLiteRepository
+
+    application = QCoreApplication.instance() or QCoreApplication([sys.argv[0]])
+    application.setApplicationName("Attendance Lab migration")
+    if not database.is_file():
+        print("Для миграции выберите существующую базу данных.", file=sys.stderr)
+        return 1
+    lock = QLockFile(str(database) + ".lock")
+    lock.setStaleLockTime(0)
+    if not lock.tryLock(100):
+        print(
+            "База используется приложением. Завершите приложение перед миграцией.", file=sys.stderr
+        )
+        return 1
+    try:
+        repository = SQLiteRepository(database, mode="demo" if demo else "real")
+        repository.close()
+        print(f"База проверена; версия схемы: {SCHEMA_VERSION}.")
+        return 0
+    except Exception as exc:
+        print(f"Миграция не выполнена: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        lock.unlock()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Локальный учёт посещаемости по PC/SC-картам")
     parser.add_argument(
         "--demo", action="store_true", help="Имитатор карт с отдельной базой данных"
     )
     parser.add_argument("--db", type=Path, help="Путь к базе (режим базы real/demo проверяется)")
+    parser.add_argument(
+        "--migrate-only", action="store_true", help="Проверить и обновить существующую БД без GUI"
+    )
     parser.add_argument(
         "--timezone", default=local_timezone(), help="Часовой пояс по умолчанию для новых занятий"
     )
@@ -47,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         ZoneInfo(args.timezone)
     except ZoneInfoNotFoundError, ValueError:
         parser.error("Неизвестный часовой пояс. Например: Europe/Minsk или UTC")
+
+    if args.migrate_only:
+        database = (args.db or default_database(args.demo)).expanduser().resolve()
+        return migrate_database(database, demo=args.demo)
 
     from PySide6.QtCore import QLockFile, QTimer
     from PySide6.QtWidgets import QApplication, QMessageBox
