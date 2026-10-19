@@ -24,6 +24,7 @@ backups/
 # Student imports, exports and other private runtime data.
 *.csv
 !examples/students.csv
+!examples/demo.csv
 *.tsv
 *.xls
 *.xlsx
