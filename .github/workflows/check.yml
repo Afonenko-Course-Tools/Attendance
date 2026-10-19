@@ -1,0 +1,27 @@
+name: check
+on: [push, pull_request]
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.10"
+      - name: Native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0 libpcsclite-dev build-essential pkg-config swig
+      - run: uv sync --locked --extra pcsc
+      - run: uv run --locked --extra pcsc ruff check .
+      - run: uv run --locked --extra pcsc ruff format --check .
+      - run: uv run --locked --extra pcsc pyright
+      - run: uv run --locked --extra pcsc pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - run: uv build
+      - name: Wheel smoke test
+        shell: bash
+        run: |
+          uv venv /tmp/attendance-wheel --python 3.14.7
+          uv pip install --python /tmp/attendance-wheel/bin/python dist/*.whl
+          cd /tmp
+          QT_QPA_PLATFORM=offscreen /tmp/attendance-wheel/bin/attendance-lab --demo --db /tmp/attendance-smoke/demo.sqlite3 --smoke-test
