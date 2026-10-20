@@ -386,6 +386,7 @@ class RedesignService(CatalogUseCases):
             current_pairs = {
                 p for b in self.list_blocks() if b.id in active_blocks for p in b.pair_ids
             }
+            current_pairs.update(p.id for p in self.service.list_lessons() if p.state == "open")
             for student_id, pair_id in targets:
                 self.service._student(student_id)
                 pair = self.service.get_lesson(pair_id)

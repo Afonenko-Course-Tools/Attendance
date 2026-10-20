@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from datetime import date
+from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -28,13 +29,19 @@ from attendance_lab.presentation.attendance_models import (
     StudentProxy,
     StudentSearch,
 )
-from attendance_lab.presentation.common import actions, guarded, plain_label, private_message
+from attendance_lab.presentation.common import (
+    actions,
+    guarded,
+    lesson_label,
+    plain_label,
+    private_message,
+)
 from attendance_lab.presentation.preparation import FormDialog, checked, choices
 from attendance_lab.presentation.sorting import sort_dialog
 
 
 class LessonWorkspace(QWidget):
-    def __init__(self, service, controller, changed, parent=None):
+    def __init__(self, service, controller, changed, parent=None, *, open_lesson=None):
         super().__init__(parent)
         self.service, self.api, self.controller, self.changed = (
             service,
@@ -43,6 +50,8 @@ class LessonWorkspace(QWidget):
             changed,
         )
         self.viewed_block_id = None
+        self.viewed_lesson_id = None
+        self.open_standalone = open_lesson or self._open_standalone
         self.pending_uids = []
         self.pinned_uid = None
         self.manual_mode = False
@@ -53,16 +62,19 @@ class LessonWorkspace(QWidget):
         self.blocks = QComboBox()
         self.today = QCheckBox("Только сегодня")
         self.today.setChecked(True)
-        bar.addWidget(plain_label("Просмотр блока"))
+        bar.addWidget(plain_label("Занятие / блок"))
         bar.addWidget(self.blocks, 1)
         bar.addWidget(self.today)
         layout.addLayout(bar)
-        layout.addLayout(
-            actions(
-                ("Расширить на обе пары", self.expand),
-                ("Отметить вручную · F2", self.start_manual),
-            )
-        )
+        registration_actions = QHBoxLayout()
+        self.expand_button = QPushButton("Расширить на обе пары")
+        self.expand_button.clicked.connect(self.expand)
+        registration_actions.addWidget(self.expand_button)
+        manual_button = QPushButton("Отметить вручную · F2")
+        manual_button.clicked.connect(self.start_manual)
+        registration_actions.addWidget(manual_button)
+        registration_actions.addStretch()
+        layout.addLayout(registration_actions)
         self.scope = plain_label(wrap=True)
         layout.addWidget(self.scope)
         splitter = QSplitter()
@@ -87,7 +99,7 @@ class LessonWorkspace(QWidget):
         self.toggle_context(False)
         roster_layout.addLayout(
             actions(
-                ("Отметить блок…", self.manual_block),
+                ("Отметить выбранных…", self.manual_block),
                 ("Основания…", self.show_evidence),
                 ("Сортировка…", lambda: sort_dialog(self, self.model, self.proxy, 7)),
             )
@@ -97,7 +109,9 @@ class LessonWorkspace(QWidget):
         splitter.addWidget(roster)
         matching = QWidget()
         match_layout = QVBoxLayout(matching)
-        self.uid_label = plain_label("Нет несопоставленных карт", wrap=True)
+        self.uid_label = plain_label(
+            "Сопоставление: откройте регистрацию и приложите карту", wrap=True
+        )
         self.uid_label.setObjectName("ActiveBanner")
         self.uid_label.setMinimumHeight(44)
         match_layout.addWidget(self.uid_label)
@@ -120,7 +134,7 @@ class LessonWorkspace(QWidget):
         self.matches = QListWidget()
         self.matches.setMinimumHeight(80)
         match_layout.addWidget(self.matches, 1)
-        self.confirm_button = QPushButton("Подтвердить · Ctrl+Enter")
+        self.confirm_button = QPushButton("Привязать карту · Enter")
         self.confirm_button.clicked.connect(self.confirm_match)
         self.defer_button = QPushButton("Отложить · Esc")
         self.defer_button.clicked.connect(self.defer)
@@ -151,11 +165,41 @@ class LessonWorkspace(QWidget):
         selected = self.blocks.currentData()
         self.blocks.blockSignals(True)
         self.blocks.clear()
-        for block in self.api.list_blocks(on_date=date.today() if self.today.isChecked() else None):
-            self.blocks.addItem(
-                f"{block.date:%d.%m.%Y} · пара {block.start_slot} · {block.title or 'Блок'} · {block.room} · #{block.id}",
-                block.id,
+        blocks = self.api.list_blocks()
+        paired = {pair for block in blocks for pair in block.pair_ids}
+        disciplines = {d.id: d.name for d in self.service.list_disciplines()}
+        rosters = {r.id: r for r in self.api.list_rosters()}
+        lessons = self.service.list_lessons()
+        by_id = {p.id: p for p in lessons}
+        entries = []
+        for block in blocks:
+            if self.today.isChecked() and block.date != date.today():
+                continue
+            roster = rosters[block.roster_id]
+            entries.append(
+                (
+                    by_id[block.pair_ids[0]].starts_at,
+                    f"{block.date:%d.%m.%Y} · пара {block.start_slot} · {disciplines[roster.discipline_id]} · {block.title or roster.name} · {block.room}",
+                    block.id,
+                )
             )
+        for lesson in lessons:
+            if lesson.id in paired:
+                continue
+            if (
+                self.today.isChecked()
+                and lesson.starts_at.astimezone(ZoneInfo(lesson.timezone)).date() != date.today()
+            ):
+                continue
+            entries.append(
+                (
+                    lesson.starts_at,
+                    lesson_label(lesson, disciplines[lesson.discipline_id]),
+                    f"lesson:{lesson.id}",
+                )
+            )
+        for _, label, key in sorted(entries, key=lambda item: item[0]):
+            self.blocks.addItem(label, key)
         index = self.blocks.findData(selected)
         self.blocks.setCurrentIndex(max(0, index))
         self.blocks.blockSignals(False)
@@ -163,10 +207,13 @@ class LessonWorkspace(QWidget):
         self.find()
 
     def show_block(self, *_):
-        self.viewed_block_id = self.blocks.currentData()
+        selected = self.blocks.currentData()
+        self.viewed_block_id = selected if isinstance(selected, int) else None
+        self.viewed_lesson_id = int(selected.split(":")[1]) if isinstance(selected, str) else None
         students = {}
         self.expected_by_pair = {}
         pair_ids = ()
+        self.cache = StudentSearch(self.api.list_student_contexts())
         if self.viewed_block_id is not None:
             block = self.api.get_block(self.viewed_block_id)
             roster = next((r for r in self.api.list_rosters() if r.id == block.roster_id), None)
@@ -184,10 +231,26 @@ class LessonWorkspace(QWidget):
             self.scope.setText(
                 f"Просмотр: блок #{block.id} · пары {', '.join(map(str, block.pair_ids))}. Просмотр не меняет активную регистрацию."
             )
+        elif self.viewed_lesson_id is not None:
+            pair_ids = (self.viewed_lesson_id,)
+            expected = self.service.get_lesson_roster(self.viewed_lesson_id)
+            self.expected_by_pair[self.viewed_lesson_id] = expected
+            students.update(
+                (s.student_id, s) for s in self.cache.students if s.student_id in expected
+            )
+            self.scope.setText(
+                "Отдельное занятие: F9 — открыть регистрацию. Просмотр не переключает регистрацию."
+            )
         else:
             self.scope.setText(
-                "На выбранную дату нет блоков. Создайте состав и блок в разделе «Подготовка»."
+                "Занятий нет. Снимите «Только сегодня», чтобы увидеть другие даты, или создайте занятие в «Подготовке»."
             )
+        if self.course.currentData() is None:
+            courses = {
+                s.course for s in (students.values() or self.cache.students) if s.course is not None
+            }
+            if len(courses) == 1:
+                self.course.setCurrentIndex(self.course.findData(courses.pop()))
         for pair in pair_ids:
             for evidence in self.api.pair_evidence(pair):
                 if (
@@ -204,17 +267,31 @@ class LessonWorkspace(QWidget):
         for column in range(7, self.model.columnCount()):
             self.table.setColumnWidth(column, 105)
         self.update_counts()
+        self.find()
+
+    def viewed_pair_ids(self):
+        if self.viewed_block_id is not None:
+            return self.api.get_block(self.viewed_block_id).pair_ids
+        return (self.viewed_lesson_id,) if self.viewed_lesson_id is not None else ()
+
+    def select_lesson(self, lesson_id):
+        block = next((b for b in self.api.list_blocks() if lesson_id in b.pair_ids), None)
+        key = block.id if block else f"lesson:{lesson_id}"
+        if self.blocks.findData(key) < 0 and self.today.isChecked():
+            self.today.setChecked(False)
+        self.blocks.setCurrentIndex(self.blocks.findData(key))
 
     def update_counts(self):
-        if self.viewed_block_id is None:
+        self.expand_button.setEnabled(self.controller.active_session_id is not None)
+        pair_ids = self.viewed_pair_ids()
+        if not pair_ids:
             self.counts.setText("Состав: 0")
             return
-        block = self.api.get_block(self.viewed_block_id)
         text = []
         values = {}
         people = {s.student_id: s for s in self.cache.students}
         outside = {}
-        for pair in block.pair_ids:
+        for pair in pair_ids:
             for evidence in self.api.pair_evidence(pair):
                 if evidence.student_id and evidence.active:
                     if evidence.student_id in people and evidence.student_id not in {
@@ -239,7 +316,12 @@ class LessonWorkspace(QWidget):
         return {i.data(IDENTITY) for i in self.table.selectionModel().selectedRows()}
 
     def open_selected(self):
+        if self.viewed_lesson_id is not None:
+            self.open_standalone(self.viewed_lesson_id)
+            self.search.setFocus() if self.course.currentData() is not None else self.course.setFocus()
+            return
         if self.viewed_block_id is None:
+            self.scope.setText("Выберите занятие. Для других дат снимите «Только сегодня».")
             return
         block = self.api.get_block(self.viewed_block_id)
         dialog = FormDialog("Открытие регистрации — охват", self)
@@ -251,6 +333,11 @@ class LessonWorkspace(QWidget):
                 self,
                 lambda: (self.controller.open_session(block.id, checked(targets)), self.changed()),
             )
+            if self.controller.active_session_id is not None:
+                self.search.setFocus() if self.course.currentData() is not None else self.course.setFocus()
+
+    def _open_standalone(self, lesson_id):
+        guarded(self, lambda: (self.controller.open_lesson(lesson_id), self.changed()))
 
     def close_active(self):
         guarded(self, lambda: (self.controller.close_session(), self.changed()))
@@ -292,7 +379,7 @@ class LessonWorkspace(QWidget):
                 self.queue.addItem(scan.uid)
             if self.pinned_uid is None and not self.manual_mode:
                 self.pinned_uid = scan.uid
-                self.uid_label.setText("Сопоставление карты: " + scan.uid)
+                self.uid_label.setText("Карта: " + scan.uid + " · выберите ФИО ↓ и Enter")
         self.update_counts()
 
     def pin(self, item):
@@ -301,15 +388,17 @@ class LessonWorkspace(QWidget):
             self.uid_label.setText("Сопоставление карты: " + self.pinned_uid)
 
     def start_manual(self):
-        if self.controller.active_session_id is None:
-            private_message(self, "Ручная отметка", "Сначала откройте регистрацию блока.")
+        if self.controller.active_lesson_id is None:
+            private_message(self, "Ручная отметка", "Сначала откройте регистрацию занятия.")
             return
         if not self.manual_mode:
             self.saved_query = self.search.text()
             self.saved_cursor = self.search.cursorPosition()
             self.manual_session_id = self.controller.active_session_id
+            self.manual_lesson_id = self.controller.active_lesson_id
         self.manual_mode = True
-        self.uid_label.setText("Ручная отметка активного сеанса — выберите студента")
+        self.uid_label.setText("Ручная отметка — выберите ФИО и нажмите Enter")
+        self.confirm_button.setText("Отметить посещение · Enter")
         self.search.clear()
         self.course.setFocus() if self.course.currentData() is None else self.search.setFocus()
 
@@ -322,10 +411,23 @@ class LessonWorkspace(QWidget):
 
         def apply():
             if self.manual_mode:
-                self.api.session_manual_mark(
-                    self.manual_session_id, student_id, "Оператор подтвердил присутствие"
-                )
+                if self.manual_session_id is not None:
+                    self.api.session_manual_mark(
+                        self.manual_session_id, student_id, "Оператор подтвердил присутствие"
+                    )
+                else:
+                    if (
+                        self.controller.active_session_id is not None
+                        or self.controller.active_lesson_id != self.manual_lesson_id
+                    ):
+                        raise ValueError(
+                            "Регистрация изменилась. Нажмите Esc и начните ручную отметку заново: F2."
+                        )
+                    self.api.create_manual_batch(
+                        {(student_id, self.manual_lesson_id)}, "Оператор подтвердил присутствие"
+                    )
                 self.manual_mode = False
+                self.confirm_button.setText("Привязать карту · Enter")
                 self.search.setText(self.saved_query)
                 self.search.setCursorPosition(self.saved_cursor)
                 self.search.setFocus()
@@ -340,8 +442,11 @@ class LessonWorkspace(QWidget):
             elif self.pinned_uid:
                 self.service.bind_card(self.pinned_uid, student_id)
                 self.feedback.setText("Карта сопоставлена; сохранённые предъявления раскрыты.")
-                self.evidence_changed()
                 self.defer()
+                self.search.clear()
+                self.search.setFocus()
+            else:
+                self.feedback.setText("Сначала откройте регистрацию и приложите карту студента.")
             self.update_counts()
             self.evidence_changed()
 
@@ -350,6 +455,7 @@ class LessonWorkspace(QWidget):
     def defer(self):
         if self.manual_mode:
             self.manual_mode = False
+            self.confirm_button.setText("Привязать карту · Enter")
             self.search.setText(self.saved_query)
             self.search.setCursorPosition(self.saved_cursor)
             self.search.setFocus()
@@ -366,15 +472,15 @@ class LessonWorkspace(QWidget):
 
     def manual_block(self):
         ids = self.selected_ids()
-        if not ids or self.viewed_block_id is None:
+        pairs = self.viewed_pair_ids()
+        if not ids or not pairs:
             return
-        block = self.api.get_block(self.viewed_block_id)
-        targets = {(student, pair) for student in ids for pair in block.pair_ids}
+        targets = {(student, pair) for student in ids for pair in pairs}
         names = "\n".join(s.full_name for s in self.model.students if s.student_id in ids)
         reason, ok = QInputDialog.getText(
             self,
-            "Ручная отметка блока",
-            f"{block.date:%d.%m.%Y} · пары {block.pair_ids}\n{names}\nСтудентов: {len(ids)} · отметок: {len(targets)}\nПричина:",
+            "Ручная отметка выбранных",
+            f"{self.blocks.currentText()} · пары {pairs}\n{names}\nСтудентов: {len(ids)} · отметок: {len(targets)}\nПричина:",
         )
         if ok:
             guarded(
@@ -388,13 +494,13 @@ class LessonWorkspace(QWidget):
 
     def show_evidence(self):
         ids = self.selected_ids()
-        if not ids or self.viewed_block_id is None:
+        pairs = self.viewed_pair_ids()
+        if not ids or not pairs:
             return
-        block = self.api.get_block(self.viewed_block_id)
         dialog = FormDialog("Основания присутствия", self)
         listing = QListWidget()
         for student in sorted(ids):
-            for pair in block.pair_ids:
+            for pair in pairs:
                 for evidence in self.api.evidence(student, pair):
                     item = QListWidgetItem(
                         f"{student} · пара {pair} · {evidence.kind} · {evidence.at:%d.%m %H:%M} · {'действует' if evidence.active else 'отменено'}",

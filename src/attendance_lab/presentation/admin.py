@@ -118,7 +118,7 @@ class MainWindow(QMainWindow):
         logs_button = QPushButton("Приватный журнал активного занятия")
         logs_button.clicked.connect(self.show_active_log)
         active_actions.addWidget(logs_button)
-        self.open_button = QPushButton("Открыть блок · F9")
+        self.open_button = QPushButton("Открыть регистрацию · F9")
         self.open_button.clicked.connect(lambda: self.workspace.open_selected())
         active_actions.addWidget(self.open_button)
         active_actions.addWidget(self.stop_button)
@@ -130,13 +130,15 @@ class MainWindow(QMainWindow):
         )
         self.students = StudentsPane(service, files, self.refresh, self)
         self.reports = ReportsPane(service, files, self)
-        self.workspace = LessonWorkspace(service, controller, self.registration_changed, self)
+        self.workspace = LessonWorkspace(
+            service, controller, self.registration_changed, self, open_lesson=self.open_registration
+        )
         self.preparation = PreparationPane(
             service, self.refresh, self.schedule, self.students, self
         )
         self.history = HistoryPane(service, self)
-        self.workspace.evidence_changed = self.history.update_evidence
-        self.history.evidence_changed = self.workspace.update_counts
+        self.workspace.evidence_changed = self.refresh_evidence
+        self.history.evidence_changed = self.refresh_evidence
         self.tabs.addTab(self.workspace, "Занятие")
         self.tabs.addTab(self.preparation, "Подготовка")
         self.tabs.addTab(self.history, "История")
@@ -320,6 +322,11 @@ class MainWindow(QMainWindow):
         self.workspace.update_counts()
         self.history.update_evidence()
 
+    def refresh_evidence(self) -> None:
+        self.workspace.update_counts()
+        self.history.update_evidence()
+        self.schedule.update_counts()
+
     def process_events(self) -> None:
         if self._closing:
             return
@@ -327,10 +334,7 @@ class MainWindow(QMainWindow):
             events = self.controller.drain()
             if self.controller.active_session_id is not None:
                 self._session_ui_active = True
-            if any(
-                event.kind == "changed" and (event.scan is None or event.scan.session_id is None)
-                for event in events
-            ):
+            if any(event.kind == "changed" and event.scan is None for event in events):
                 if not self._session_ui_active:
                     self.refresh()
                 else:
@@ -346,9 +350,12 @@ class MainWindow(QMainWindow):
                             event.scan.lesson_id, event.scan.uid, event.result
                         )
                     if event.scan.session_id is not None:
-                        self.workspace.scan(event.scan, event.result)
                         session = self.service.redesign.get_session(event.scan.session_id)
                         self.history.update_evidence(set(session.target_pair_ids))
+                    else:
+                        self.history.update_evidence({event.scan.lesson_id})
+                    self.workspace.scan(event.scan, event.result)
+                    self.schedule.update_counts(event.scan.lesson_id)
                 elif event.kind == "public" and event.result is not None:
                     result = event.result
                     if result.at is not None and self.controller.active_lesson_id is not None:
@@ -398,6 +405,12 @@ class MainWindow(QMainWindow):
         guarded(self, connect)
 
     def open_registration(self, lesson_id: int) -> None:
+        self.workspace.select_lesson(lesson_id)
+        self.tabs.setCurrentWidget(self.workspace)
+        if self.workspace.viewed_block_id is not None:
+            self.workspace.open_selected()
+            return
+
         def start() -> None:
             lesson = self.service.get_lesson(lesson_id)
             if self.controller.active_lesson_id not in (None, lesson_id):
