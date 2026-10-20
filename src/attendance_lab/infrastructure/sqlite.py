@@ -6,13 +6,19 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 from uuid import uuid4
 
 from attendance_lab.application.ports import CardRecord, ScanRecord
 from attendance_lab.domain.models import AttendanceError, Discipline, Lesson, LessonState, Student
+from attendance_lab.infrastructure.redesign_sqlite import (
+    SCHEMA_V2,
+    V2_TABLE_COLUMNS,
+    RedesignSQLiteMixin,
+)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # The SQL schema enforces storage invariants even when a caller has a programming error.
 _SCHEMA_V1 = """
@@ -88,7 +94,7 @@ def _datetime(value: str) -> datetime:
     return result.astimezone(UTC)
 
 
-class SQLiteRepository:
+class SQLiteRepository(RedesignSQLiteMixin):
     """One main-thread connection. The reader communicates through the controller queue."""
 
     def __init__(self, path: Path, *, mode: str = "real") -> None:
@@ -131,16 +137,32 @@ class SQLiteRepository:
                     "INSERT INTO metadata(key, value) VALUES ('mode', ?), ('application', ?)",
                     (self.mode, "attendance-lab"),
                 )
-                self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                self._connection.execute("PRAGMA user_version = 1")
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
                 raise
+        version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 1:
+            # Reject foreign, corrupt or wrong-mode data before backing up or writing.
+            self._validate_database(self._connection, version=1)
+            if existed:
+                self._write_backup(self._safety_path("before-migration"))
+            try:
+                self._connection.executescript("BEGIN IMMEDIATE;\n" + SCHEMA_V2)
+                self._connection.execute("PRAGMA user_version = 2")
+                self._validate_database(self._connection)
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
         self._validate_database(self._connection)
 
-    def _validate_database(self, connection: sqlite3.Connection) -> None:
-        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version != SCHEMA_VERSION:
+    def _validate_database(
+        self, connection: sqlite3.Connection, *, version: int = SCHEMA_VERSION
+    ) -> None:
+        actual_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if actual_version != version:
             raise AttendanceError("Неподдерживаемая версия базы данных.")
         try:
             values = dict(connection.execute("SELECT key, value FROM metadata").fetchall())
@@ -183,6 +205,23 @@ class SQLiteRepository:
                     "scope",
                 },
             }
+            if version >= 2:
+                required_columns["students"].add("record_book_number")
+                required_columns.update(V2_TABLE_COLUMNS)
+                required_objects = {
+                    "single_open_registration",
+                    "session_pair_block",
+                    "students_record_book",
+                    "evidence_session_uid",
+                }
+                found_objects = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type IN ('index','trigger')"
+                    )
+                }
+                if not required_objects <= found_objects:
+                    raise AttendanceError("Структура базы данных повреждена или неизвестна.")
             for table, columns in required_columns.items():
                 found = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
                 if not columns.issubset(found):
@@ -465,11 +504,25 @@ class SQLiteRepository:
         source = sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True)
         source.row_factory = sqlite3.Row
         try:
-            # Validate a stable source snapshot before changing any current data.
-            source.execute("BEGIN")
-            self._validate_database(source)
-            self._write_backup(self._safety_path("before-restore"))
-            source.backup(self._connection)
+            source_version = int(source.execute("PRAGMA user_version").fetchone()[0])
+            if source_version not in (1, SCHEMA_VERSION):
+                raise AttendanceError("Неподдерживаемая версия резервной копии.")
+            self._validate_database(source, version=source_version)
+            # Snapshot a read-only source into a private temporary directory. Only the
+            # private copy is migrated; old backups remain byte-for-byte unchanged.
+            with TemporaryDirectory(prefix="attendance-restore-") as directory:
+                temporary_path = Path(directory) / "snapshot.sqlite3"
+                destination = sqlite3.connect(temporary_path)
+                try:
+                    source.backup(destination)
+                finally:
+                    destination.close()
+                candidate = SQLiteRepository(temporary_path, mode=self.mode)
+                try:
+                    self._write_backup(self._safety_path("before-restore"))
+                    candidate._connection.backup(self._connection)
+                finally:
+                    candidate.close()
             self._connection.execute("PRAGMA foreign_keys = ON")
             self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("PRAGMA synchronous = FULL")

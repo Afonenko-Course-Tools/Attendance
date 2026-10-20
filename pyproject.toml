@@ -1,6 +1,6 @@
 [project]
 name = "attendance-lab"
-version = "0.1.1"
+version = "0.2.0"
 description = "Local PC/SC student attendance with private administration and a public display"
 readme = "README.md"
 requires-python = ">=3.14.7"

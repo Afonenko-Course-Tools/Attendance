@@ -153,6 +153,23 @@ class SchedulePane(QWidget):
             ],
             [lesson.id for lesson in lessons],
         )
+
+    def update_counts(self, lesson_id: int | None = None) -> None:
+        """Update committed counts without resetting the operator's selection."""
+        for row in range(self.lessons.rowCount()):
+            key = self.lessons.item(row, 0)
+            if key is None:
+                continue
+            current_id = int(key.text())
+            if lesson_id is not None and current_id != lesson_id:
+                continue
+            counts = self.service.lesson_counts(current_id)
+            item = self.lessons.item(row, 6)
+            if item is not None:
+                item.setText(
+                    f"Карт: {counts.unique_cards} · Студентов: {counts.identified_students}\n"
+                    f"Без сопоставления: {counts.unidentified_cards}"
+                )
         self.lessons.resizeRowsToContents()
 
     def selected_lesson_id(self) -> int | None:
