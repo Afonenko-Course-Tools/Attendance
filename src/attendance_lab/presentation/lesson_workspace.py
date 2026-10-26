@@ -4,7 +4,7 @@ from collections.abc import Callable
 from datetime import date
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -13,10 +13,12 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QInputDialog,
+    QLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTableView,
     QVBoxLayout,
@@ -41,7 +43,9 @@ from attendance_lab.presentation.sorting import sort_dialog
 
 
 class LessonWorkspace(QWidget):
-    def __init__(self, service, controller, changed, parent=None, *, open_lesson=None):
+    def __init__(
+        self, service, controller, changed, parent=None, *, open_lesson=None, edit_card=None
+    ):
         super().__init__(parent)
         self.service, self.api, self.controller, self.changed = (
             service,
@@ -54,6 +58,9 @@ class LessonWorkspace(QWidget):
         self.open_standalone = open_lesson or self._open_standalone
         self.pending_uids = []
         self.pinned_uid = None
+        self.last_card_uid = None
+        self.last_card_name = None
+        self.edit_card = edit_card or (lambda _uid: False)
         self.manual_mode = False
         self.saved_query = ""
         self.evidence_changed: Callable[..., None] = lambda *_: None
@@ -73,6 +80,10 @@ class LessonWorkspace(QWidget):
         manual_button = QPushButton("Отметить вручную · F2")
         manual_button.clicked.connect(self.start_manual)
         registration_actions.addWidget(manual_button)
+        self.correct_button = QPushButton("Исправить последнюю карту · F4")
+        self.correct_button.setEnabled(False)
+        self.correct_button.clicked.connect(self.correct_last_card)
+        registration_actions.addWidget(self.correct_button)
         registration_actions.addStretch()
         layout.addLayout(registration_actions)
         self.scope = plain_label(wrap=True)
@@ -109,12 +120,12 @@ class LessonWorkspace(QWidget):
         splitter.addWidget(roster)
         matching = QWidget()
         match_layout = QVBoxLayout(matching)
+        match_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.uid_label = plain_label(
             "Сопоставление: откройте регистрацию и приложите карту", wrap=True
         )
         self.uid_label.setObjectName("ActiveBanner")
         self.uid_label.setMinimumHeight(44)
-        match_layout.addWidget(self.uid_label)
         self.queue = QListWidget()
         self.queue.setMaximumHeight(60)
         self.queue.setMinimumHeight(34)
@@ -138,11 +149,31 @@ class LessonWorkspace(QWidget):
         self.confirm_button.clicked.connect(self.confirm_match)
         self.defer_button = QPushButton("Отложить · Esc")
         self.defer_button.clicked.connect(self.defer)
-        match_layout.addWidget(self.confirm_button)
-        match_layout.addWidget(self.defer_button)
+        self.last_card_label = plain_label("Последняя карта: ещё не предъявлена", wrap=True)
+        match_layout.addWidget(self.last_card_label)
         self.feedback = plain_label(wrap=True)
         match_layout.addWidget(self.feedback)
-        splitter.addWidget(matching)
+        match_scroll = QScrollArea()
+        match_scroll.setWidgetResizable(True)
+        match_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        match_scroll.setWidget(matching)
+        self.match_scroll = match_scroll
+        for field in (self.queue, self.course, self.search, self.matches):
+            field.installEventFilter(self)
+        for listing in (self.queue, self.matches):
+            listing.currentItemChanged.connect(
+                lambda *_, field=listing: (
+                    self.reveal_matching_field(field) if field.hasFocus() else None
+                )
+            )
+        matching_column = QWidget()
+        column_layout = QVBoxLayout(matching_column)
+        column_layout.setContentsMargins(0, 0, 0, 0)
+        column_layout.addWidget(self.uid_label)
+        column_layout.addWidget(match_scroll, 1)
+        column_layout.addWidget(self.confirm_button)
+        column_layout.addWidget(self.defer_button)
+        splitter.addWidget(matching_column)
         splitter.setSizes([650, 320])
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -159,6 +190,31 @@ class LessonWorkspace(QWidget):
     def toggle_context(self, visible):
         for column in (1, 3, 4, 5):
             self.table.setColumnHidden(column, not visible)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.FocusIn and watched in (
+            self.queue,
+            self.course,
+            self.search,
+            self.matches,
+        ):
+            self.reveal_matching_field(watched)
+        return super().eventFilter(watched, event)
+
+    def reveal_matching_field(self, field):
+        if isinstance(field, QListWidget):
+            item = field.currentItem()
+            if item:
+                field.scrollToItem(item)
+            rect = field.visualItemRect(item) if item else field.viewport().rect()
+            content = self.match_scroll.widget()
+            assert content is not None
+            point = field.viewport().mapTo(content, rect.center() if item else rect.topLeft())
+            self.match_scroll.ensureVisible(
+                point.x(), point.y(), 0, max(12, rect.height() // 2) if item else 12
+            )
+        else:
+            self.match_scroll.ensureWidgetVisible(field, 0, 8)
 
     def refresh(self, *_):
         self.cache = StudentSearch(self.api.list_student_contexts())
@@ -347,8 +403,8 @@ class LessonWorkspace(QWidget):
 
     def focus_matches(self):
         if self.matches.count():
-            self.matches.setFocus()
             self.matches.setCurrentRow(0)
+            self.matches.setFocus()
 
     def find(self, *_):
         if not hasattr(self, "matches"):
@@ -373,6 +429,10 @@ class LessonWorkspace(QWidget):
         self.matches.setCurrentRow(-1)
 
     def scan(self, scan, result):
+        if result.kind in ("success", "repeat"):
+            self.last_card_uid = scan.uid
+            self.last_card_name = result.full_name
+            self.update_last_card()
         if result.full_name is None and result.kind in ("success", "repeat"):
             if scan.uid not in self.pending_uids:
                 self.pending_uids.append(scan.uid)
@@ -380,12 +440,71 @@ class LessonWorkspace(QWidget):
             if self.pinned_uid is None and not self.manual_mode:
                 self.pinned_uid = scan.uid
                 self.uid_label.setText("Карта: " + scan.uid + " · выберите ФИО ↓ и Enter")
+            elif self.pinned_uid != scan.uid and not self.manual_mode:
+                self.feedback.setText(
+                    f"Карта {scan.uid} сохранена в очереди. Сейчас сопоставляется {self.pinned_uid}."
+                )
         self.update_counts()
 
     def pin(self, item):
         if not self.manual_mode:
+            if self.pinned_uid != item.text():
+                self.matches.setCurrentRow(-1)
             self.pinned_uid = item.text()
             self.uid_label.setText("Сопоставление карты: " + self.pinned_uid)
+
+    def update_last_card(self):
+        self.correct_button.setEnabled(self.last_card_uid is not None)
+        self.last_card_label.setText(
+            f"Последняя карта: {self.last_card_uid} · {self.last_card_name or 'Не сопоставлена'}"
+            if self.last_card_uid
+            else "Последняя карта: ещё не предъявлена"
+        )
+        self.correct_button.setToolTip(self.last_card_label.text())
+
+    def correct_last_card(self):
+        if self.last_card_uid:
+            self.edit_card(self.last_card_uid)
+
+    def card_binding_changed(self, uid):
+        card = next((c for c in self.service.list_cards() if c.uid == uid), None)
+        if card is None:
+            return
+        if uid == self.last_card_uid:
+            self.last_card_name = card.full_name
+        if card.student_id is not None:
+            self.pending_uids = [pending for pending in self.pending_uids if pending != uid]
+            if self.pinned_uid == uid:
+                self.pinned_uid = None
+                self.matches.setCurrentRow(-1)
+        elif uid not in self.pending_uids:
+            self.pending_uids.append(uid)
+        self.queue.blockSignals(True)
+        self.queue.clear()
+        self.queue.addItems(self.pending_uids)
+        if self.pinned_uid is None and self.pending_uids and not self.manual_mode:
+            self.pinned_uid = self.pending_uids[0]
+            self.matches.setCurrentRow(-1)
+        if self.pinned_uid in self.pending_uids:
+            self.queue.setCurrentRow(self.pending_uids.index(self.pinned_uid))
+        self.queue.blockSignals(False)
+        if not self.manual_mode:
+            self.uid_label.setText(
+                "Сопоставление карты: " + self.pinned_uid
+                if self.pinned_uid
+                else "Нет несопоставленных карт"
+            )
+        self.update_last_card()
+        self.feedback.setText(
+            "Привязка исправлена; история обновлена."
+            if card.student_id
+            else f"Привязка карты {uid} снята. "
+            + (
+                "Выберите правильное ФИО — повторно прикладывать карту не нужно."
+                if self.pinned_uid == uid
+                else "Для сопоставления сначала выберите эту карту в очереди."
+            )
+        )
 
     def start_manual(self):
         if self.controller.active_lesson_id is None:
@@ -441,6 +560,11 @@ class LessonWorkspace(QWidget):
                 )
             elif self.pinned_uid:
                 self.service.bind_card(self.pinned_uid, student_id)
+                self.last_card_uid = self.pinned_uid
+                self.last_card_name = next(
+                    (s.full_name for s in self.cache.students if s.student_id == student_id), None
+                )
+                self.update_last_card()
                 self.feedback.setText("Карта сопоставлена; сохранённые предъявления раскрыты.")
                 self.defer()
                 self.search.clear()
@@ -464,6 +588,7 @@ class LessonWorkspace(QWidget):
             self.queue.clear()
             self.queue.addItems(self.pending_uids)
             self.pinned_uid = self.pending_uids[0] if self.pending_uids else None
+            self.matches.setCurrentRow(-1)
         self.uid_label.setText(
             "Сопоставление карты: " + self.pinned_uid
             if self.pinned_uid

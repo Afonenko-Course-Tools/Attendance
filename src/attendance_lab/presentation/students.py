@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLineEdit,
+    QPushButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -46,10 +47,11 @@ class StudentsPane(QWidget):
         self.service = service
         self.files = files
         self.changed = changed
+        self.binding_changed: Callable[[str], None] = lambda _uid: self.changed()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Поиск студента: ФИО, группа или ID")
+        self.search.setPlaceholderText("Поиск студента или карты: ФИО, группа, № зачётки, ID, UID")
         layout.addWidget(self.search)
         splitter = QSplitter(Qt.Orientation.Vertical)
         top = QWidget()
@@ -76,12 +78,10 @@ class StudentsPane(QWidget):
         bottom_layout.addLayout(bar)
         self.cards = table(("UID", "Студент", "ID студента", "Занятий в истории"))
         bottom_layout.addWidget(self.cards)
-        bottom_layout.addLayout(
-            actions(
-                ("Сопоставить карту…", lambda: self._selected_bind(False)),
-                ("Исправить ошибочную привязку…", lambda: self._selected_bind(True)),
-            )
-        )
+        self.card_action = QPushButton("Выберите карту в таблице")
+        self.card_action.setEnabled(False)
+        self.card_action.clicked.connect(lambda: self._selected_bind(False))
+        bottom_layout.addWidget(self.card_action)
         note = plain_label(
             "Позднее сопоставление раскрывает уже сохранённые отметки. Исправление меняет связь всей истории карты; передачу карты другому студенту эта версия не учитывает.",
             wrap=True,
@@ -94,9 +94,15 @@ class StudentsPane(QWidget):
         layout.addWidget(splitter, 1)
         self.search.textChanged.connect(lambda *_: self.refresh())
         self.unknown_only.toggled.connect(lambda *_: self.refresh())
+        self.cards.itemSelectionChanged.connect(self._card_selection_changed)
 
     def refresh(self) -> None:
         search = self.search.text().casefold().strip()
+        all_students = {s.id: s for s in self.service.list_students()}
+        books = {
+            s.student_id: s.record_book_number
+            for s in self.service.redesign.list_student_contexts()
+        }
         students = [
             s
             for s in self.service.list_students()
@@ -110,8 +116,18 @@ class StudentsPane(QWidget):
         cards = [
             card
             for card in self.service.list_cards()
-            if not self.unknown_only.isChecked() or card.student_id is None
+            if (not self.unknown_only.isChecked() or card.student_id is None)
+            and (
+                not search
+                or search
+                in (
+                    f"{card.uid} {card.full_name or ''} {card.student_id or ''} "
+                    f"{all_students[card.student_id].group if card.student_id in all_students else ''} "
+                    f"{books.get(card.student_id or '', '')}"
+                ).casefold()
+            )
         ]
+        selected = selected_key(self.cards)
         fill_table(
             self.cards,
             [
@@ -124,6 +140,22 @@ class StudentsPane(QWidget):
                 for card in cards
             ],
             [card.uid for card in cards],
+        )
+        if selected not in {card.uid for card in cards}:
+            self.cards.clearSelection()
+            self.cards.setCurrentCell(-1, -1)
+        self._card_selection_changed()
+
+    def _card_selection_changed(self) -> None:
+        uid = selected_key(self.cards)
+        card = next((c for c in self.service.list_cards() if c.uid == uid), None)
+        self.card_action.setEnabled(card is not None)
+        self.card_action.setText(
+            "Исправить / снять привязку…"
+            if card and card.student_id
+            else "Сопоставить карту…"
+            if card
+            else "Выберите карту в таблице"
         )
 
     def edit_student(self, edit: bool) -> None:
@@ -177,7 +209,7 @@ class StudentsPane(QWidget):
         if uid is not None:
             self.bind_uid(str(uid), correction)
 
-    def bind_uid(self, uid: str, correction: bool = False) -> None:
+    def bind_uid(self, uid: str, correction: bool = False) -> bool:
         card = next((card for card in self.service.list_cards() if card.uid == uid), None)
         if card is None:
             private_message(
@@ -185,34 +217,39 @@ class StudentsPane(QWidget):
                 "Карта не найдена",
                 "Сначала сохраните предъявление карты на открытом занятии.",
             )
-            return
+            return False
+        correction = card.student_id is not None
         students = self.service.list_students()
-        if not students:
+        if not students and not correction:
             private_message(
                 self,
                 "Нет студентов",
                 "Добавьте студента или импортируйте CSV. Предъявления карт уже сохранены.",
             )
-            return
-        if card.student_id and not correction:
-            private_message(
-                self,
-                "Карта уже сопоставлена",
-                f"Текущее сопоставление: {card.full_name} ({card.student_id}).\nДля изменения используйте отдельное действие «Исправить ошибочную привязку».",
-            )
-            return
-        if correction and not card.student_id:
-            private_message(
-                self,
-                "Карта ещё не сопоставлена",
-                "Для этой карты используйте обычное сопоставление.",
-            )
-            return
-        dialog = BindingDialog(card, students, self, correction=correction)
+            return False
+        dialog = BindingDialog(
+            card,
+            students,
+            self,
+            correction=correction,
+            contexts=self.service.redesign.list_student_contexts(),
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
 
-            def save() -> None:
-                self.service.bind_card(uid, dialog.student_id(), correction=correction)
-                self.changed()
+            def save() -> bool:
+                student_id = dialog.student_id()
+                if student_id is None:
+                    assert card.student_id is not None
+                    self.service.unbind_card(uid, expected_student_id=card.student_id)
+                else:
+                    self.service.bind_card(
+                        uid,
+                        student_id,
+                        correction=correction,
+                        expected_student_id=card.student_id if correction else None,
+                    )
+                self.binding_changed(uid)
+                return True
 
-            guarded(self, save)
+            return guarded(self, save) is True
+        return False

@@ -248,12 +248,25 @@ class AttendanceService:
             ]
         return result
 
-    def bind_card(self, uid: str, student_id: str, *, correction: bool = False) -> None:
+    def bind_card(
+        self,
+        uid: str,
+        student_id: str,
+        *,
+        correction: bool = False,
+        expected_student_id: str | None = None,
+    ) -> None:
         uid = normalize_uid(uid)
         with self.repository.transaction():
             self._student(student_id)
             card = self.repository.get_card(uid)
             previous_id = card.student_id if card else None
+            if (
+                correction
+                and expected_student_id is not None
+                and previous_id != expected_student_id
+            ):
+                raise AttendanceError("Привязка карты изменилась. Обновите список карт.")
             if previous_id == student_id:
                 return
             if previous_id is not None and not correction:
@@ -269,6 +282,23 @@ class AttendanceService:
                 student_id,
                 datetime.now(UTC),
                 correction=previous_id is not None,
+            )
+
+    def unbind_card(self, uid: str, *, expected_student_id: str) -> None:
+        uid = normalize_uid(uid)
+        if not expected_student_id:
+            raise AttendanceError("Не указан прежний владелец карты.")
+        with self.repository.transaction():
+            card = self.repository.get_card(uid)
+            if card is None:
+                raise AttendanceError("Карта не найдена.")
+            if card.student_id is None:
+                return
+            if card.student_id != expected_student_id:
+                raise AttendanceError("Привязка карты изменилась. Обновите список карт.")
+            self.repository.put_card(CardRecord(uid, None))
+            self.repository.add_binding_change(
+                uid, card.student_id, None, datetime.now(UTC), correction=True
             )
 
     def lesson_log(self, lesson_id: int) -> list[LogRow]:

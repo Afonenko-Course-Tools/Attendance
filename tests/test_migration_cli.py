@@ -26,7 +26,7 @@ def test_headless_cli_migrates_existing_v1_database(tmp_path):
     result = run_migration(path)
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
     assert list(tmp_path.glob("*.before-migration.*.sqlite3"))
 
 

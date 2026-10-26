@@ -12,9 +12,10 @@ class Commands:
         menu = window.menuBar().addMenu("Команды · F1")
         definitions = [
             ("Команды", "F1", self.show),
-            ("Отменить сопоставление / ручной поиск", "Escape", window.workspace.defer),
+            ("Отложить карту / выйти из ручного поиска", "Escape", window.workspace.defer),
             ("Ручная отметка активного сеанса", "F2", window.workspace.start_manual),
             ("Поиск на экране", "F3", self.search),
+            ("Исправить последнюю карту", "F4", window.workspace.correct_last_card),
             ("Следующая область", "F6", lambda: self.focus_region(1)),
             ("Предыдущая область", "Shift+F6", lambda: self.focus_region(-1)),
             ("Открыть регистрацию блока", "F9", window.workspace.open_selected),

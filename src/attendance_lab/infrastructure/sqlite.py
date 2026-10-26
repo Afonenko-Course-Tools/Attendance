@@ -18,7 +18,25 @@ from attendance_lab.infrastructure.redesign_sqlite import (
     RedesignSQLiteMixin,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+_SCHEMA_V3 = """
+CREATE TABLE binding_changes_v3 (
+    id INTEGER PRIMARY KEY,
+    uid TEXT NOT NULL REFERENCES cards(uid),
+    previous_student_id TEXT REFERENCES students(id),
+    student_id TEXT REFERENCES students(id),
+    changed_at TEXT NOT NULL,
+    correction INTEGER NOT NULL CHECK(correction IN (0, 1)),
+    scope TEXT NOT NULL CHECK(scope = 'all_history')
+);
+INSERT INTO binding_changes_v3
+    (id, uid, previous_student_id, student_id, changed_at, correction, scope)
+SELECT id, uid, previous_student_id, student_id, changed_at, correction, scope
+FROM binding_changes;
+DROP TABLE binding_changes;
+ALTER TABLE binding_changes_v3 RENAME TO binding_changes;
+"""
 
 # The SQL schema enforces storage invariants even when a caller has a programming error.
 _SCHEMA_V1 = """
@@ -121,6 +139,7 @@ class SQLiteRepository(RedesignSQLiteMixin):
 
     def _migrate(self, existed: bool) -> None:
         version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
+        original_version = version
         if version > SCHEMA_VERSION:
             raise AttendanceError("База создана более новой версией приложения.")
         if version == 0:
@@ -151,6 +170,19 @@ class SQLiteRepository(RedesignSQLiteMixin):
             try:
                 self._connection.executescript("BEGIN IMMEDIATE;\n" + SCHEMA_V2)
                 self._connection.execute("PRAGMA user_version = 2")
+                self._validate_database(self._connection, version=2)
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+        version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 2:
+            self._validate_database(self._connection, version=2)
+            if existed and original_version == 2:
+                self._write_backup(self._safety_path("before-migration"))
+            try:
+                self._connection.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA_V3)
+                self._connection.execute("PRAGMA user_version = 3")
                 self._validate_database(self._connection)
                 self._connection.commit()
             except BaseException:
@@ -225,6 +257,12 @@ class SQLiteRepository(RedesignSQLiteMixin):
             for table, columns in required_columns.items():
                 found = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
                 if not columns.issubset(found):
+                    raise AttendanceError("Структура базы данных повреждена или неизвестна.")
+            if version >= 3:
+                columns = {
+                    row[1]: row for row in connection.execute("PRAGMA table_info(binding_changes)")
+                }
+                if columns["student_id"][3]:
                     raise AttendanceError("Структура базы данных повреждена или неизвестна.")
         except sqlite3.DatabaseError as exc:
             raise AttendanceError("Не удалось проверить файл базы данных.") from exc
@@ -430,7 +468,7 @@ class SQLiteRepository(RedesignSQLiteMixin):
         self,
         uid: str,
         previous_student_id: str | None,
-        student_id: str,
+        student_id: str | None,
         changed_at: datetime,
         *,
         correction: bool,
@@ -505,7 +543,7 @@ class SQLiteRepository(RedesignSQLiteMixin):
         source.row_factory = sqlite3.Row
         try:
             source_version = int(source.execute("PRAGMA user_version").fetchone()[0])
-            if source_version not in (1, SCHEMA_VERSION):
+            if source_version not in (1, 2, SCHEMA_VERSION):
                 raise AttendanceError("Неподдерживаемая версия резервной копии.")
             self._validate_database(source, version=source_version)
             # Snapshot a read-only source into a private temporary directory. Only the

@@ -212,3 +212,153 @@ def test_manual_draft_cannot_silently_credit_a_previous_registration(window, tra
         assert window.service.redesign.evidence(student.id, current.id) == []
     finally:
         dismiss.stop()
+
+
+@pytest.mark.parametrize("operation", ["remove", "replace", "cancel"])
+def test_last_bound_card_can_be_corrected_from_home_without_losing_other_card_draft(
+    window, operation
+):
+    service = window.service
+    service.redesign.apply_import(
+        service.redesign.preview_import(
+            [
+                "№",
+                "ФИО",
+                "Специальность",
+                "Специализация/профилизация",
+                "Курс",
+                "Группа",
+                "№ зачётки",
+            ],
+            [["2", "Борисов Борис", "Физика", "Учебный профиль", "2", "10", "000124"]],
+            datetime.now().year,
+        )
+    )
+    now = datetime.now(UTC)
+    lesson = service.save_lesson(
+        service.list_disciplines()[0].id,
+        now - timedelta(minutes=1),
+        now + timedelta(minutes=80),
+        "UTC",
+    )
+    window.refresh()
+    window.controller.open_lesson(lesson.id)
+    window.controller.connect_reader(DEMO_READER_NAME)
+    window.process_events()
+    window.controller.simulate("0011")
+    window.controller.simulate("0022")
+    window.process_events()
+    workspace = window.workspace
+    workspace.search.setText("семенов")
+    workspace.matches.setCurrentRow(0)
+    workspace.confirm_match()
+    before = service.lesson_log(lesson.id)[0]
+    original_owner = before.student_id
+    assert original_owner is not None
+    assert workspace.pinned_uid == "0022"
+    workspace.search.setText("семен")
+    workspace.search.setCursorPosition(2)
+    errors = []
+    edited = []
+
+    def edit_dialog():
+        dialog = QApplication.activeModalWidget()
+        try:
+            edited.append(True)
+            assert dialog.card.uid == "0011"
+            dialog.activateWindow()
+            QApplication.processEvents()
+            if operation in ("remove", "cancel"):
+                dialog.remove_binding.setChecked(True)
+                dialog.reject() if operation == "cancel" else dialog.accept()
+            else:
+                dialog.search.setText("борисов")
+                QTest.keyClick(dialog.search, Qt.Key.Key_Down)
+                QTest.keyClick(dialog.list_widget, Qt.Key.Key_Return)
+                assert dialog.result() == 1
+        except Exception as exc:
+            errors.append(exc)
+            if dialog:
+                dialog.reject()
+
+    QTimer.singleShot(0, edit_dialog)
+    QTest.keyClick(window, Qt.Key.Key_F4)
+    assert edited, "F4 не открыл исправление карты"
+    assert not errors, errors
+    after = service.lesson_log(lesson.id)[0]
+    expected_owner = (
+        None
+        if operation == "remove"
+        else next(s.id for s in service.list_students() if s.full_name == "Борисов Борис")
+        if operation == "replace"
+        else original_owner
+    )
+    assert after.student_id == expected_owner
+    assert (after.uid, after.first_seen, after.last_seen) == (
+        before.uid,
+        before.first_seen,
+        before.last_seen,
+    )
+    assert workspace.pinned_uid == "0022"
+    assert workspace.search.text() == "семен"
+    assert workspace.search.cursorPosition() == 2
+    assert ("0011" in workspace.pending_uids) is (operation == "remove")
+
+
+def test_switching_queued_card_requires_a_new_explicit_student_selection(window):
+    workspace = window.workspace
+    workspace.pending_uids = ["0011", "0022"]
+    workspace.queue.addItems(workspace.pending_uids)
+    workspace.pinned_uid = "0011"
+    workspace.course.setCurrentIndex(workspace.course.findData(2))
+    workspace.search.setText("семенов")
+    workspace.matches.setCurrentRow(0)
+    workspace.queue.setCurrentRow(1)
+    assert workspace.pinned_uid == "0022"
+    assert workspace.search.text() == "семенов"
+    assert workspace.matches.currentItem() is None
+
+
+def test_card_directory_search_cannot_leave_another_card_selected(window):
+    service = window.service
+    owner = service.list_students()[0]
+    service.bind_card("0011", owner.id)
+    service.bind_card("0022", owner.id)
+    pane = window.students
+    pane.refresh()
+    pane.cards.selectRow(1)
+    assert pane.card_action.isEnabled()
+    pane.search.setText("0011")
+    assert pane.cards.rowCount() == 1
+    assert pane.cards.item(0, 0).text() == "0011"
+    assert not pane.card_action.isEnabled()
+    pane.cards.selectRow(0)
+    pane.search.setText("Семёнов")
+    assert pane.cards.rowCount() == 2
+    pane.unknown_only.setChecked(True)
+    assert pane.cards.rowCount() == 0
+    assert not pane.card_action.isEnabled()
+
+
+def test_keyboard_search_and_results_are_visible_after_scrolling_small_window(window):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QScrollArea
+
+    workspace = window.workspace
+    window.resize(980, 720)
+    QApplication.processEvents()
+    scroll = next(
+        s for s in workspace.findChildren(QScrollArea) if s.widget().isAncestorOf(workspace.search)
+    )
+    workspace.course.setCurrentIndex(workspace.course.findData(2))
+    workspace.search.setText("семенов")
+    scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+    workspace.table.setFocus()
+    window.commands.search()
+    top = workspace.search.mapTo(scroll.viewport(), QPoint(0, 0)).y()
+    assert 0 <= top <= scroll.viewport().height() - workspace.search.height()
+    QTest.keyClick(workspace.search, Qt.Key.Key_Down)
+    item = workspace.matches.currentItem()
+    row = workspace.matches.visualItemRect(item)
+    top = workspace.matches.viewport().mapTo(scroll.viewport(), row.topLeft()).y()
+    assert 0 <= top <= scroll.viewport().height() - row.height()

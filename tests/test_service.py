@@ -436,3 +436,62 @@ def test_backup_cannot_overwrite_live_sqlite_sidecar_files(
     with pytest.raises(AttendanceError):
         service.backup(tmp_path / f"attendance.sqlite3{suffix}")
     assert service.list_students()[0].full_name == "Анна"
+
+
+def test_unbind_preserves_scans_and_audits_once(service: AttendanceService, tmp_path: Path):
+    student = service.create_student("Тест", student_id="owner")
+    lesson = make_lesson(service)
+    service.open_lesson(lesson.id)
+    service.record_scan(lesson.id, UID, NOW)
+    service.record_scan(lesson.id, UID, NOW + timedelta(minutes=4))
+    service.bind_card(UID, student.id)
+    before = service.repository.list_scans()
+    service.unbind_card("00:11:22:33:44:55:66", expected_student_id=student.id)
+    service.unbind_card(UID, expected_student_id=student.id)
+    assert service.repository.get_card(UID).student_id is None
+    assert service.repository.list_scans() == before
+    assert service.report(lesson.discipline_id).unknown_count == 1
+    with sqlite3.connect(tmp_path / "attendance.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT previous_student_id, student_id, correction, scope "
+            "FROM binding_changes ORDER BY id"
+        ).fetchall() == [(None, "owner", 0, "all_history"), ("owner", None, 1, "all_history")]
+
+
+def test_binding_corrections_reject_stale_owner_without_changes(service: AttendanceService):
+    first = service.create_student("Первый", student_id="first")
+    second = service.create_student("Второй", student_id="second")
+    service.bind_card(UID, second.id)
+    with pytest.raises(AttendanceError):
+        service.unbind_card(UID, expected_student_id=first.id)
+    with pytest.raises(AttendanceError):
+        service.bind_card(UID, first.id, correction=True, expected_student_id=first.id)
+    assert service.repository.get_card(UID).student_id == second.id
+    service.bind_card(UID, first.id, correction=True, expected_student_id=second.id)
+    assert service.repository.get_card(UID).student_id == first.id
+    with pytest.raises(AttendanceError):
+        service.unbind_card("FFEE", expected_student_id=first.id)
+
+
+def test_unbind_rolls_back_owner_when_audit_write_fails(tmp_path: Path):
+    class FailingAudit(SQLiteRepository):
+        fail = False
+
+        def add_binding_change(self, *args, **kwargs):
+            super().add_binding_change(*args, **kwargs)
+            if self.fail:
+                raise sqlite3.OperationalError("synthetic audit failure")
+
+    repository = FailingAudit(tmp_path / "synthetic.sqlite3")
+    service = AttendanceService(repository)
+    try:
+        service.create_student("Первый", student_id="first")
+        service.bind_card(UID, "first")
+        repository.fail = True
+        with pytest.raises(sqlite3.OperationalError):
+            service.unbind_card(UID, expected_student_id="first")
+        assert repository.get_card(UID).student_id == "first"
+        with sqlite3.connect(repository.path) as connection:
+            assert connection.execute("SELECT count(*) FROM binding_changes").fetchone()[0] == 1
+    finally:
+        service.close()

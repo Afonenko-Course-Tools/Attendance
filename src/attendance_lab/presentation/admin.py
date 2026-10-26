@@ -131,13 +131,19 @@ class MainWindow(QMainWindow):
         self.students = StudentsPane(service, files, self.refresh, self)
         self.reports = ReportsPane(service, files, self)
         self.workspace = LessonWorkspace(
-            service, controller, self.registration_changed, self, open_lesson=self.open_registration
+            service,
+            controller,
+            self.registration_changed,
+            self,
+            open_lesson=self.open_registration,
+            edit_card=self.students.bind_uid,
         )
         self.preparation = PreparationPane(
             service, self.refresh, self.schedule, self.students, self
         )
         self.history = HistoryPane(service, self)
         self.workspace.evidence_changed = self.refresh_evidence
+        self.students.binding_changed = self.card_binding_changed
         self.history.evidence_changed = self.refresh_evidence
         self.tabs.addTab(self.workspace, "Занятие")
         self.tabs.addTab(self.preparation, "Подготовка")
@@ -326,6 +332,14 @@ class MainWindow(QMainWindow):
         self.workspace.update_counts()
         self.history.update_evidence()
         self.schedule.update_counts()
+
+    def card_binding_changed(self, uid: str) -> None:
+        self.students.refresh()
+        self.workspace.card_binding_changed(uid)
+        self.refresh_evidence()
+        self.reports.refresh()
+        self._refresh_context()
+        self.public_window.show_idle()
 
     def process_events(self) -> None:
         if self._closing:

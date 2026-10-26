@@ -97,6 +97,30 @@ def test_manual_time_is_confirmation_and_card_time_takes_precedence(lab):
     assert service.lesson_counts(block.pair_ids[0]).identified_students == 1
 
 
+def test_unbinding_only_removes_evidence_from_that_card(lab):
+    service, api, discipline, _, block = lab
+    student = api.list_student_contexts()[0].student_id
+    first, second = block.pair_ids
+    api.create_manual_batch({(student, second)}, "Ручное подтверждение")
+    session = api.open_session(block.id, {first})
+    service.bind_card("AABB", student)
+    service.bind_card("CCDD", student)
+    first_time = datetime(2026, 9, 1, 6, 3, tzinfo=UTC)
+    other_time = datetime(2026, 9, 1, 6, 4, tzinfo=UTC)
+    api.record_session_scan(session.id, "AABB", first_time)
+    api.record_session_scan(session.id, "CCDD", other_time)
+    scans = service.repository.list_scans()
+    other_evidence = [e for e in api.evidence(student, first) if e.uid == "CCDD"]
+    manual_evidence = api.evidence(student, second)
+    service.unbind_card("AABB", expected_student_id=student)
+    assert service.repository.list_scans() == scans
+    assert api.evidence(student, first) == other_evidence
+    assert api.evidence(student, second) == manual_evidence
+    report = service.report(discipline.id, student_id=student)
+    assert report.rows[0].cells[0].first_seen == other_time
+    assert report.rows[0].cells[1].manual_confirmation
+
+
 def test_slots_and_student_roster_validation(lab):
     _, api, discipline, roster, block = lab
     first, second = [api.service.get_lesson(p) for p in block.pair_ids]
