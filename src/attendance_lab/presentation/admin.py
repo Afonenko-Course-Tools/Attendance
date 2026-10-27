@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
 from attendance_lab.application.controller import AttendanceController
 from attendance_lab.application.files import CsvPort
 from attendance_lab.application.service import AttendanceService
-from attendance_lab.domain.models import PublicResult
 from attendance_lab.presentation.commands import Commands
 from attendance_lab.presentation.common import (
     STYLE,
@@ -346,6 +345,7 @@ class MainWindow(QMainWindow):
             return
         try:
             events = self.controller.drain()
+            self.workspace.sync_registration_context()
             if self.controller.active_session_id is not None:
                 self._session_ui_active = True
             if any(event.kind == "changed" and event.scan is None for event in events):
@@ -370,6 +370,9 @@ class MainWindow(QMainWindow):
                         self.history.update_evidence({event.scan.lesson_id})
                     self.workspace.scan(event.scan, event.result)
                     self.schedule.update_counts(event.scan.lesson_id)
+                elif event.kind == "failed" and event.lesson_id is not None:
+                    if self.workspace.is_active_context(event.lesson_id, event.session_id):
+                        self.workspace.scan_failed()
                 elif event.kind == "public" and event.result is not None:
                     result = event.result
                     if result.at is not None and self.controller.active_lesson_id is not None:
@@ -384,7 +387,8 @@ class MainWindow(QMainWindow):
             # Never open a technical dialog over the public display and never leak details.
             self.reader_status = f"Ошибка обновления: {exc}"
             self.device_status.setText(self.reader_status)
-            self.public_window.display(PublicResult("error", "Повторите попытку"))
+            self.workspace.display_update_error()
+            self.public_window.display_update_error()
 
     def refresh_readers(self) -> None:
         selected = self.readers.currentData()

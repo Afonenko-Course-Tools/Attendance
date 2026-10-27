@@ -23,10 +23,12 @@ class Reader(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ControllerEvent:
-    kind: Literal["public", "status", "changed"]
+    kind: Literal["public", "status", "changed", "failed"]
     result: PublicResult | None = None
     text: str = ""
     scan: CapturedScan | None = None
+    lesson_id: int | None = None
+    session_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +106,14 @@ class AttendanceController:
                 self._events.append(ControllerEvent("status", text=f"Ошибка регистрации: {exc}"))
                 result = PublicResult(
                     "error", "Не удалось сохранить отметку. Уберите карту и повторите попытку."
+                )
+                self._events.append(
+                    ControllerEvent(
+                        "failed",
+                        result=result,
+                        lesson_id=scan.lesson_id,
+                        session_id=scan.session_id,
+                    )
                 )
             else:
                 # Private feedback carries hardware context separately from the public DTO.

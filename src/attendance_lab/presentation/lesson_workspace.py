@@ -4,10 +4,11 @@ from collections.abc import Callable
 from datetime import date
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -60,6 +61,10 @@ class LessonWorkspace(QWidget):
         self.pinned_uid = None
         self.last_card_uid = None
         self.last_card_name = None
+        self.last_presented_uid = None
+        self.last_presented_name = None
+        self.last_presented_kind = None
+        self.registration_context = (None, None)
         self.edit_card = edit_card or (lambda _uid: False)
         self.manual_mode = False
         self.saved_query = ""
@@ -149,8 +154,8 @@ class LessonWorkspace(QWidget):
         self.confirm_button.clicked.connect(self.confirm_match)
         self.defer_button = QPushButton("Отложить · Esc")
         self.defer_button.clicked.connect(self.defer)
-        self.last_card_label = plain_label("Последняя карта: ещё не предъявлена", wrap=True)
-        match_layout.addWidget(self.last_card_label)
+        self.last_card_label = plain_label("Последнее предъявление: пока нет", wrap=True)
+        self.last_card_label.setMinimumHeight(44)
         self.feedback = plain_label(wrap=True)
         match_layout.addWidget(self.feedback)
         match_scroll = QScrollArea()
@@ -158,6 +163,7 @@ class LessonWorkspace(QWidget):
         match_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         match_scroll.setWidget(matching)
         self.match_scroll = match_scroll
+        match_scroll.viewport().installEventFilter(self)
         for field in (self.queue, self.course, self.search, self.matches):
             field.installEventFilter(self)
         for listing in (self.queue, self.matches):
@@ -169,6 +175,7 @@ class LessonWorkspace(QWidget):
         matching_column = QWidget()
         column_layout = QVBoxLayout(matching_column)
         column_layout.setContentsMargins(0, 0, 0, 0)
+        column_layout.addWidget(self.last_card_label)
         column_layout.addWidget(self.uid_label)
         column_layout.addWidget(match_scroll, 1)
         column_layout.addWidget(self.confirm_button)
@@ -192,6 +199,8 @@ class LessonWorkspace(QWidget):
             self.table.setColumnHidden(column, not visible)
 
     def eventFilter(self, watched, event):
+        if watched is self.match_scroll.viewport() and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self, self.reveal_focused_matching_field)
         if event.type() == QEvent.Type.FocusIn and watched in (
             self.queue,
             self.course,
@@ -200,6 +209,11 @@ class LessonWorkspace(QWidget):
         ):
             self.reveal_matching_field(watched)
         return super().eventFilter(watched, event)
+
+    def reveal_focused_matching_field(self):
+        field = QApplication.focusWidget()
+        if field in (self.queue, self.course, self.search, self.matches):
+            self.reveal_matching_field(field)
 
     def reveal_matching_field(self, field):
         if isinstance(field, QListWidget):
@@ -319,6 +333,7 @@ class LessonWorkspace(QWidget):
         if self.pinned_uid is None and self.pending_uids:
             self.pinned_uid = self.pending_uids[0]
             self.uid_label.setText("Сопоставление карты: " + self.pinned_uid)
+        self.update_last_card()
         self.model.set_students(students.values(), pair_ids)
         for column in range(7, self.model.columnCount()):
             self.table.setColumnWidth(column, 105)
@@ -430,9 +445,12 @@ class LessonWorkspace(QWidget):
 
     def scan(self, scan, result):
         if result.kind in ("success", "repeat"):
-            self.last_card_uid = scan.uid
-            self.last_card_name = result.full_name
-            self.update_last_card()
+            if self.is_active_scan(scan):
+                self.last_card_uid = scan.uid
+                self.last_card_name = result.full_name
+                self.last_presented_uid = scan.uid
+                self.last_presented_name = result.full_name
+                self.last_presented_kind = result.kind
         if result.full_name is None and result.kind in ("success", "repeat"):
             if scan.uid not in self.pending_uids:
                 self.pending_uids.append(scan.uid)
@@ -444,7 +462,19 @@ class LessonWorkspace(QWidget):
                 self.feedback.setText(
                     f"Карта {scan.uid} сохранена в очереди. Сейчас сопоставляется {self.pinned_uid}."
                 )
+        self.update_last_card()
         self.update_counts()
+
+    def is_active_scan(self, scan):
+        return self.is_active_context(scan.lesson_id, scan.session_id)
+
+    def is_active_context(self, lesson_id, session_id):
+        return (
+            session_id == self.controller.active_session_id
+            if session_id is not None
+            else self.controller.active_session_id is None
+            and lesson_id == self.controller.active_lesson_id
+        )
 
     def pin(self, item):
         if not self.manual_mode:
@@ -455,12 +485,82 @@ class LessonWorkspace(QWidget):
 
     def update_last_card(self):
         self.correct_button.setEnabled(self.last_card_uid is not None)
-        self.last_card_label.setText(
-            f"Последняя карта: {self.last_card_uid} · {self.last_card_name or 'Не сопоставлена'}"
+        target = (
+            f"Карта {self.last_card_uid} · {self.last_card_name or 'Не сопоставлена'}"
             if self.last_card_uid
-            else "Последняя карта: ещё не предъявлена"
+            else "Пока нет карты для исправления"
         )
-        self.correct_button.setToolTip(self.last_card_label.text())
+        self.correct_button.setToolTip(target)
+        if (
+            self.last_card_uid
+            and self.last_presented_uid
+            and self.last_card_uid != self.last_presented_uid
+        ):
+            name = self.correct_button.fontMetrics().elidedText(
+                self.last_card_name or f"карту {self.last_card_uid}",
+                Qt.TextElideMode.ElideRight,
+                180,
+            )
+            self.correct_button.setText(f"Исправить {name} · F4")
+        else:
+            self.correct_button.setText("Исправить последнюю карту · F4")
+        if self.last_presented_kind == "display_error":
+            text = "Ошибка обновления экрана\nПроверьте отметку в журнале"
+            background, foreground = "#fee2e2", "#991b1b"
+        elif self.last_presented_kind == "error":
+            text = "Последнее предъявление: ошибка\nНе удалось сохранить отметку"
+            background, foreground = "#fee2e2", "#991b1b"
+        elif self.last_presented_uid is None:
+            text = "Последнее предъявление: пока нет"
+            background, foreground = "#e8f0fa", "#234667"
+        elif self.last_presented_name:
+            state = "уже отмечен" if self.last_presented_kind == "repeat" else "отметка сохранена"
+            text = (
+                f"Последний студент: {self.last_presented_name}\n"
+                f"Карта {self.last_presented_uid} привязана · {state}"
+            )
+            background, foreground = "#dcfce7", "#14532d"
+        else:
+            state = (
+                "ожидает в очереди" if self.last_presented_uid in self.pending_uids else "отложена"
+            )
+            text = f"Последняя карта: {self.last_presented_uid}\nКарта не привязана · {state}"
+            background, foreground = "#fef3c7", "#713f12"
+        self.last_card_label.setText(text)
+        style = (
+            f"background: {background}; color: {foreground}; padding: 8px; "
+            "border-radius: 6px; font-weight: 600;"
+        )
+        if self.last_card_label.styleSheet() != style:
+            self.last_card_label.setStyleSheet(style)
+
+    def sync_registration_context(self):
+        session = self.controller.active_session_id
+        context = (session, None if session is not None else self.controller.active_lesson_id)
+        if context != self.registration_context:
+            self.registration_context = context
+            self.last_card_uid = None
+            self.last_card_name = None
+            self.last_presented_uid = None
+            self.last_presented_name = None
+            self.last_presented_kind = None
+            self.update_last_card()
+
+    def scan_failed(self):
+        self.last_card_uid = None
+        self.last_card_name = None
+        self.last_presented_uid = None
+        self.last_presented_name = None
+        self.last_presented_kind = "error"
+        self.update_last_card()
+
+    def display_update_error(self):
+        self.last_card_uid = None
+        self.last_card_name = None
+        self.last_presented_uid = None
+        self.last_presented_name = None
+        self.last_presented_kind = "display_error"
+        self.update_last_card()
 
     def correct_last_card(self):
         if self.last_card_uid:
@@ -472,6 +572,8 @@ class LessonWorkspace(QWidget):
             return
         if uid == self.last_card_uid:
             self.last_card_name = card.full_name
+        if uid == self.last_presented_uid:
+            self.last_presented_name = card.full_name
         if card.student_id is not None:
             self.pending_uids = [pending for pending in self.pending_uids if pending != uid]
             if self.pinned_uid == uid:
@@ -559,11 +661,14 @@ class LessonWorkspace(QWidget):
                     else "Нет несопоставленных карт"
                 )
             elif self.pinned_uid:
+                bound_uid = self.pinned_uid
                 self.service.bind_card(self.pinned_uid, student_id)
                 self.last_card_uid = self.pinned_uid
                 self.last_card_name = next(
                     (s.full_name for s in self.cache.students if s.student_id == student_id), None
                 )
+                if bound_uid == self.last_presented_uid:
+                    self.last_presented_name = self.last_card_name
                 self.update_last_card()
                 self.feedback.setText("Карта сопоставлена; сохранённые предъявления раскрыты.")
                 self.defer()
@@ -594,6 +699,7 @@ class LessonWorkspace(QWidget):
             if self.pinned_uid
             else "Нет несопоставленных карт"
         )
+        self.update_last_card()
 
     def manual_block(self):
         ids = self.selected_ids()
