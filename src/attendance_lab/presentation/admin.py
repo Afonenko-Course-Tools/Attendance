@@ -5,11 +5,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -26,7 +29,7 @@ from PySide6.QtWidgets import (
 from attendance_lab.application.controller import AttendanceController
 from attendance_lab.application.files import CsvPort
 from attendance_lab.application.service import AttendanceService
-from attendance_lab.domain.models import PublicResult
+from attendance_lab.presentation.commands import Commands
 from attendance_lab.presentation.common import (
     STYLE,
     actions,
@@ -35,7 +38,10 @@ from attendance_lab.presentation.common import (
     plain_label,
     private_message,
 )
+from attendance_lab.presentation.history import HistoryPane
+from attendance_lab.presentation.lesson_workspace import LessonWorkspace
 from attendance_lab.presentation.logs import LogsWindow
+from attendance_lab.presentation.preparation import PreparationPane
 from attendance_lab.presentation.public import PublicWindow
 from attendance_lab.presentation.reports import ReportsPane
 from attendance_lab.presentation.schedule import SchedulePane
@@ -62,6 +68,7 @@ class MainWindow(QMainWindow):
         self.reader_status = "Не подключён"
         self.log_lesson_id: int | None = None
         self._closing = False
+        self._session_ui_active = False
         self.setWindowTitle(
             "Учёт посещаемости — "
             + ("ИМИТАТОР · тестовая база" if demo else "Приватное управление")
@@ -71,17 +78,32 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLE)
         central = QWidget()
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(7)
         heading = plain_label("Учёт посещаемости")
         heading.setObjectName("Heading")
-        layout.addWidget(heading)
+        title_row = QHBoxLayout()
+        logo_path = Path(__file__).parent / "assets" / "bsu-wordmark.png"
+        if logo_path.exists():
+            logo = plain_label()
+            logo.setPixmap(
+                QPixmap(str(logo_path)).scaled(
+                    180,
+                    58,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            title_row.addWidget(logo)
+        title_row.addWidget(heading)
+        title_row.addStretch()
+        layout.addLayout(title_row)
         subtitle = plain_label(
             "Локальный журнал занятий · "
             + ("ИМИТАТОР — отдельная тестовая база" if demo else "PC/SC · приватное управление")
         )
         subtitle.setObjectName("Muted")
-        layout.addWidget(subtitle)
+        subtitle.hide()
         self.active_banner = plain_label(wrap=True)
         self.active_banner.setObjectName("ActiveBanner")
         layout.addWidget(self.active_banner)
@@ -95,6 +117,9 @@ class MainWindow(QMainWindow):
         logs_button = QPushButton("Приватный журнал активного занятия")
         logs_button.clicked.connect(self.show_active_log)
         active_actions.addWidget(logs_button)
+        self.open_button = QPushButton("Открыть регистрацию · F9")
+        self.open_button.clicked.connect(lambda: self.workspace.open_selected())
+        active_actions.addWidget(self.open_button)
         active_actions.addWidget(self.stop_button)
         active_actions.addStretch()
         layout.addLayout(active_actions)
@@ -104,10 +129,34 @@ class MainWindow(QMainWindow):
         )
         self.students = StudentsPane(service, files, self.refresh, self)
         self.reports = ReportsPane(service, files, self)
-        self.tabs.addTab(self.schedule, "Дисциплины и расписание")
-        self.tabs.addTab(self.students, "Студенты и карты")
-        self.tabs.addTab(self.reports, "Посещаемость")
-        self.tabs.addTab(self._settings(), "Устройство и окна")
+        self.workspace = LessonWorkspace(
+            service,
+            controller,
+            self.registration_changed,
+            self,
+            open_lesson=self.open_registration,
+            edit_card=self.students.bind_uid,
+        )
+        self.preparation = PreparationPane(
+            service, self.refresh, self.schedule, self.students, self
+        )
+        self.history = HistoryPane(service, self)
+        self.workspace.evidence_changed = self.refresh_evidence
+        self.students.binding_changed = self.card_binding_changed
+        self.history.evidence_changed = self.refresh_evidence
+        self.tabs.addTab(self.workspace, "Занятие")
+        self.tabs.addTab(self.preparation, "Подготовка")
+        self.tabs.addTab(self.history, "История")
+        settings = self._settings()
+        settings_layout = settings.layout()
+        assert isinstance(settings_layout, QVBoxLayout)
+        settings_layout.insertWidget(0, self.reports)
+        self.reports.hide()
+        export_button = QPushButton("Экспорт CSV и дополнительные фильтры…")
+        export_button.clicked.connect(self.show_reports)
+        self.history.layout().addWidget(export_button)  # type: ignore[union-attr]
+        self.tabs.addTab(settings, "Настройки")
+        self.commands = Commands(self)
         layout.addWidget(self.tabs, 1)
         self.device_status = plain_label("Считыватель: не подключён", wrap=True)
         self.device_status.setObjectName("Muted")
@@ -116,8 +165,25 @@ class MainWindow(QMainWindow):
         self.public_window = PublicWindow()
         self.logs_window = LogsWindow(service, files, self.students.bind_uid)
         self.logs_window.setStyleSheet(STYLE)
+        self.embedded_log = LogsWindow(service, files, self.students.bind_uid)
+        self.embedded_log.setParent(self.workspace)
+        self.embedded_log.setWindowFlags(Qt.WindowType.Widget)
+        self.embedded_log.setMaximumHeight(235)
+        workspace_layout = self.workspace.layout()
+        assert workspace_layout is not None
+        workspace_layout.addWidget(self.embedded_log)
+        self.embedded_log.hide()
+        self.embedded_log_button = QPushButton("Журнал событий ▸")
+        self.embedded_log_button.setCheckable(True)
+        self.embedded_log_button.toggled.connect(self.embedded_log.setVisible)
+        self.embedded_log_button.toggled.connect(
+            lambda visible: self._refresh_context() if visible else None
+        )
+        workspace_layout.insertWidget(
+            workspace_layout.count() - 1, self.embedded_log_button
+        ) if isinstance(workspace_layout, QVBoxLayout) else None
         self.event_timer = QTimer(self)
-        self.event_timer.setInterval(80)
+        self.event_timer.setInterval(30)
         self.event_timer.timeout.connect(self.process_events)
         self.event_timer.start()
         self.refresh()
@@ -202,7 +268,15 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(database_group)
         layout.addStretch()
-        return widget
+        widget.setMinimumHeight(700)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(widget)
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(scroll)
+        return outer
 
     def _active_label(self) -> str:
         lesson_id = self.controller.active_lesson_id
@@ -218,6 +292,12 @@ class MainWindow(QMainWindow):
             "Активная регистрация: "
             + (active_label or "закрыта — выберите занятие и откройте регистрацию")
         )
+        if self.controller.active_session_id is not None:
+            session = self.service.redesign.get_session(self.controller.active_session_id)
+            block = self.service.redesign.get_block(session.block_id)
+            self.active_banner.setText(
+                f"● Регистрация открыта · сеанс #{session.id} · блок #{block.id} · пары {session.target_pair_ids} · {active_label} · устройство: {self.reader_status}"
+            )
         self.stop_button.setEnabled(self.controller.active_lesson_id is not None)
         self.public_window.set_lesson(
             active_label, registration_open=self.controller.active_lesson_id is not None
@@ -228,23 +308,71 @@ class MainWindow(QMainWindow):
         names = {d.id: d.name for d in self.service.list_disciplines()}
         log_label = lesson_label(lesson, names.get(lesson.discipline_id, "")) if lesson else ""
         self.logs_window.set_context(lesson, log_label, active_label, self.reader_status)
+        self.embedded_log.set_context(lesson, log_label, active_label, self.reader_status)
 
     def refresh(self) -> None:
         self.schedule.refresh()
         self.students.refresh()
         self.reports.refresh()
+        self.workspace.refresh()
+        self.preparation.refresh()
+        self.history.refresh()
         self._refresh_context()
+
+    def registration_changed(self) -> None:
+        if self.controller.active_lesson_id is not None:
+            self.log_lesson_id = self.controller.active_lesson_id
+        self.process_events()
+        self._refresh_context()
+        self.workspace.update_counts()
+        self.history.update_evidence()
+
+    def refresh_evidence(self) -> None:
+        self.workspace.update_counts()
+        self.history.update_evidence()
+        self.schedule.update_counts()
+
+    def card_binding_changed(self, uid: str) -> None:
+        self.students.refresh()
+        self.workspace.card_binding_changed(uid)
+        self.refresh_evidence()
+        self.reports.refresh()
+        self._refresh_context()
+        self.public_window.show_idle()
 
     def process_events(self) -> None:
         if self._closing:
             return
         try:
             events = self.controller.drain()
-            if any(event.kind == "changed" for event in events):
-                self.refresh()
+            self.workspace.sync_registration_context()
+            if self.controller.active_session_id is not None:
+                self._session_ui_active = True
+            if any(event.kind == "changed" and event.scan is None for event in events):
+                if not self._session_ui_active:
+                    self.refresh()
+                else:
+                    self._refresh_context()
             for event in events:
                 if event.kind == "changed" and event.scan is not None and event.result is not None:
-                    self.logs_window.show_scan(event.scan.lesson_id, event.scan.uid, event.result)
+                    if event.scan.session_id is None or self.logs_window.isVisible():
+                        self.logs_window.show_scan(
+                            event.scan.lesson_id, event.scan.uid, event.result
+                        )
+                    if self.embedded_log.isVisible():
+                        self.embedded_log.show_scan(
+                            event.scan.lesson_id, event.scan.uid, event.result
+                        )
+                    if event.scan.session_id is not None:
+                        session = self.service.redesign.get_session(event.scan.session_id)
+                        self.history.update_evidence(set(session.target_pair_ids))
+                    else:
+                        self.history.update_evidence({event.scan.lesson_id})
+                    self.workspace.scan(event.scan, event.result)
+                    self.schedule.update_counts(event.scan.lesson_id)
+                elif event.kind == "failed" and event.lesson_id is not None:
+                    if self.workspace.is_active_context(event.lesson_id, event.session_id):
+                        self.workspace.scan_failed()
                 elif event.kind == "public" and event.result is not None:
                     result = event.result
                     if result.at is not None and self.controller.active_lesson_id is not None:
@@ -259,7 +387,8 @@ class MainWindow(QMainWindow):
             # Never open a technical dialog over the public display and never leak details.
             self.reader_status = f"Ошибка обновления: {exc}"
             self.device_status.setText(self.reader_status)
-            self.public_window.display(PublicResult("error", "Повторите попытку"))
+            self.workspace.display_update_error()
+            self.public_window.display_update_error()
 
     def refresh_readers(self) -> None:
         selected = self.readers.currentData()
@@ -294,6 +423,12 @@ class MainWindow(QMainWindow):
         guarded(self, connect)
 
     def open_registration(self, lesson_id: int) -> None:
+        self.workspace.select_lesson(lesson_id)
+        self.tabs.setCurrentWidget(self.workspace)
+        if self.workspace.viewed_block_id is not None:
+            self.workspace.open_selected()
+            return
+
         def start() -> None:
             lesson = self.service.get_lesson(lesson_id)
             if self.controller.active_lesson_id not in (None, lesson_id):
@@ -313,6 +448,7 @@ class MainWindow(QMainWindow):
                     question=True,
                 ):
                     return
+            self._session_ui_active = False
             self.controller.open_lesson(lesson_id)
             self.log_lesson_id = lesson_id
             self.process_events()
@@ -323,8 +459,7 @@ class MainWindow(QMainWindow):
     def close_registration(self) -> None:
         def close() -> None:
             self.controller.close_lesson()
-            self.process_events()
-            self.refresh()
+            self.registration_changed()
 
         guarded(self, close)
 
@@ -337,6 +472,21 @@ class MainWindow(QMainWindow):
             self.process_events()
 
         guarded(self, present)
+
+    def show_reports(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Экспорт посещаемости CSV")
+        dialog.resize(1000, 650)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(self.reports)
+        self.reports.show()
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        self.reports.refresh()
+        dialog.exec()
+        self.reports.hide()
+        self.reports.setParent(self)
 
     def show_public(self) -> None:
         self._refresh_context()
@@ -434,4 +584,5 @@ class MainWindow(QMainWindow):
         self._closing = True
         self.public_window.close()
         self.logs_window.close()
+        self.embedded_log.close()
         event.accept()
