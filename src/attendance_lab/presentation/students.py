@@ -4,27 +4,27 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
     QLineEdit,
     QPushButton,
-    QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
 from attendance_lab.application.files import CsvPort
 from attendance_lab.application.service import AttendanceService
+from attendance_lab.presentation.attendance_models import StudentSearch, normalized
 from attendance_lab.presentation.common import (
     actions,
     fill_table,
     guarded,
     plain_label,
     private_message,
-    selected_key,
     table,
 )
 from attendance_lab.presentation.dialogs import (
@@ -48,118 +48,168 @@ class StudentsPane(QWidget):
         self.files = files
         self.changed = changed
         self.binding_changed: Callable[[str], None] = lambda _uid: self.changed()
+        self._students_by_id = {}
+        self._contexts_by_id = {}
+        self._cards = []
+        self._search_index = StudentSearch(())
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Поиск студента или карты: ФИО, группа, № зачётки, ID, UID")
-        layout.addWidget(self.search)
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        top = QWidget()
-        top_layout = QVBoxLayout(top)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        self.students = table(("ID студента", "ФИО", "Группа"))
-        top_layout.addWidget(self.students)
-        top_layout.addLayout(
-            actions(
-                ("Добавить студента", lambda: self.edit_student(False)),
-                ("Изменить студента", lambda: self.edit_student(True)),
-                ("Импорт CSV…", self.import_students),
-                ("Экспорт студентов CSV…", self.export_students),
-            )
+        layout.setContentsMargins(8, 8, 8, 8)
+        toolbar = actions(
+            ("Добавить студента", lambda: self.edit_student(False)),
+            ("Изменить студента", lambda: self.edit_student(True)),
+            ("Импорт CSV…", self.import_students),
+            ("Экспорт студентов CSV…", self.export_students),
         )
-        bottom = QWidget()
-        bottom_layout = QVBoxLayout(bottom)
-        bottom_layout.setContentsMargins(0, 8, 0, 0)
-        bar = QHBoxLayout()
-        bar.addWidget(plain_label("Приватный список карт — UID"))
-        self.unknown_only = QCheckBox("Только несопоставленные")
-        bar.addStretch()
-        bar.addWidget(self.unknown_only)
-        bottom_layout.addLayout(bar)
-        self.cards = table(("UID", "Студент", "ID студента", "Занятий в истории"))
-        bottom_layout.addWidget(self.cards)
-        self.card_action = QPushButton("Выберите карту в таблице")
-        self.card_action.setEnabled(False)
-        self.card_action.clicked.connect(lambda: self._selected_bind(False))
-        bottom_layout.addWidget(self.card_action)
+        self.unbind_button = QPushButton("Снять привязку карты · Ctrl+U")
+        self.unbind_button.setEnabled(False)
+        self.unbind_button.clicked.connect(self.unbind_selected_student)
+        toolbar.insertWidget(0, self.unbind_button)
+        layout.addLayout(toolbar)
+        search_bar = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Поиск: ФИО, группа, специальность или № зачётки · F3")
+        search_bar.addWidget(self.search, 1)
+        self.course = QComboBox()
+        self.course.addItem("Все курсы", None)
+        for number in range(1, 7):
+            self.course.addItem(f"{number} курс", number)
+        search_bar.addWidget(self.course)
+        layout.addLayout(search_bar)
+        self.students = table(("ФИО", "Курс", "Группа", "Специальность", "№ зачётки", "Карт"))
+        layout.addWidget(self.students, 1)
         note = plain_label(
-            "Позднее сопоставление раскрывает уже сохранённые отметки. Исправление меняет связь всей истории карты; передачу карты другому студенту эта версия не учитывает.",
+            "Выберите студента и снимите ошибочную привязку. Чтобы исправить предъявленную карту, нажмите F4 на странице занятия.",
             wrap=True,
         )
         note.setObjectName("Muted")
-        bottom_layout.addWidget(note)
-        splitter.addWidget(top)
-        splitter.addWidget(bottom)
-        splitter.setSizes([300, 300])
-        layout.addWidget(splitter, 1)
-        self.search.textChanged.connect(lambda *_: self.refresh())
-        self.unknown_only.toggled.connect(lambda *_: self.refresh())
-        self.cards.itemSelectionChanged.connect(self._card_selection_changed)
+        layout.addWidget(note)
+        self.search.textChanged.connect(self._filter_students)
+        self.course.currentIndexChanged.connect(self._filter_students)
+        self.students.itemSelectionChanged.connect(self._student_selection_changed)
+        self.next_student = QShortcut(QKeySequence("Down"), self.search)
+        self.next_student.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.next_student.activated.connect(self.focus_students)
+        self.unbind_shortcut = QShortcut(QKeySequence("Ctrl+U"), self)
+        self.unbind_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.unbind_shortcut.activated.connect(self.unbind_selected_student)
 
     def refresh(self) -> None:
-        search = self.search.text().casefold().strip()
-        all_students = {s.id: s for s in self.service.list_students()}
-        books = {
-            s.student_id: s.record_book_number
-            for s in self.service.redesign.list_student_contexts()
-        }
+        self._students_by_id = {s.id: s for s in self.service.list_students()}
+        contexts = self.service.redesign.list_student_contexts()
+        self._contexts_by_id = {s.student_id: s for s in contexts}
+        self._search_index = StudentSearch(contexts)
+        self._cards = self.service.list_cards()
+        self._filter_students()
+
+    def _filter_students(self, *_args) -> None:
+        search = normalized(self.search.text()).strip()
+        found = {s.student_id for s in self._search_index.find(search)}
+        course = self.course.currentData()
         students = [
             s
-            for s in self.service.list_students()
-            if not search or search in f"{s.id} {s.full_name} {s.group}".casefold()
-        ]
-        fill_table(
-            self.students,
-            [(s.id, s.full_name, s.group) for s in students],
-            [s.id for s in students],
-        )
-        cards = [
-            card
-            for card in self.service.list_cards()
-            if (not self.unknown_only.isChecked() or card.student_id is None)
-            and (
+            for s in self._students_by_id.values()
+            if (
                 not search
-                or search
-                in (
-                    f"{card.uid} {card.full_name or ''} {card.student_id or ''} "
-                    f"{all_students[card.student_id].group if card.student_id in all_students else ''} "
-                    f"{books.get(card.student_id or '', '')}"
-                ).casefold()
+                or s.id in found
+                or all(part in normalized(f"{s.full_name} {s.group}") for part in search.split())
+            )
+            and (
+                course is None
+                or (
+                    self._contexts_by_id.get(s.id) is not None
+                    and self._contexts_by_id[s.id].course == course
+                )
             )
         ]
-        selected = selected_key(self.cards)
+        selected = self._selected_student_id()
         fill_table(
-            self.cards,
+            self.students,
             [
                 (
-                    card.uid,
-                    card.full_name or "Не сопоставлена",
-                    card.student_id or "—",
-                    card.lesson_count,
+                    s.full_name,
+                    self._contexts_by_id[s.id].course or "—"
+                    if s.id in self._contexts_by_id
+                    else "—",
+                    self._contexts_by_id[s.id].group_number or s.group or "—"
+                    if s.id in self._contexts_by_id
+                    else s.group or "—",
+                    self._contexts_by_id[s.id].specialty or "—"
+                    if s.id in self._contexts_by_id
+                    else "—",
+                    self._contexts_by_id[s.id].record_book_number or "—"
+                    if s.id in self._contexts_by_id
+                    else "—",
+                    sum(card.student_id == s.id for card in self._cards),
                 )
-                for card in cards
+                for s in students
             ],
-            [card.uid for card in cards],
+            [s.id for s in students],
         )
-        if selected not in {card.uid for card in cards}:
-            self.cards.clearSelection()
-            self.cards.setCurrentCell(-1, -1)
-        self._card_selection_changed()
+        if selected not in {s.id for s in students}:
+            self.students.clearSelection()
+            self.students.setCurrentCell(-1, -1)
+        for column, width in enumerate((250, 55, 60, 215, 110, 60)):
+            self.students.setColumnWidth(column, width)
+        self._student_selection_changed()
 
-    def _card_selection_changed(self) -> None:
-        uid = selected_key(self.cards)
-        card = next((c for c in self.service.list_cards() if c.uid == uid), None)
-        self.card_action.setEnabled(card is not None)
-        self.card_action.setText(
-            "Исправить / снять привязку…"
-            if card and card.student_id
-            else "Сопоставить карту…"
-            if card
-            else "Выберите карту в таблице"
+    def _student_selection_changed(self) -> None:
+        student_id = self._selected_student_id()
+        self.unbind_button.setEnabled(
+            student_id is not None and any(c.student_id == student_id for c in self._cards)
         )
+
+    def _selected_student_id(self) -> str | None:
+        rows = self.students.selectionModel().selectedRows()
+        if len(rows) != 1:
+            return None
+        value = rows[0].data(Qt.ItemDataRole.UserRole)
+        return value if isinstance(value, str) else None
+
+    def focus_students(self) -> None:
+        if self.students.rowCount():
+            self.students.selectRow(0)
+            self.students.setFocus()
+
+    def unbind_selected_student(self) -> None:
+        student_id = self._selected_student_id()
+        if student_id is None:
+            return
+        student = self._students_by_id.get(student_id)
+        if student is None:
+            return
+        uids = {card.uid for card in self._cards if card.student_id == student.id}
+        if not uids:
+            return
+        count = len(uids)
+        detail = (
+            f"У студента записано {count} карт. Будут сняты ВСЕ эти привязки. "
+            "Чтобы исправить только одну, приложите её и нажмите F4 на странице занятия.\n\n"
+            if count > 1
+            else ""
+        )
+        if not private_message(
+            self,
+            "Снять привязку карты?",
+            f"Студент: {student.full_name} · группа {student.group or '—'}\n\n"
+            + detail
+            + ("Посещения по этим картам" if count > 1 else "Посещения по этой карте")
+            + " на всех занятиях больше не будут относиться к студенту. "
+            "Сами предъявления и их время сохранятся. Снять привязку?",
+            question=True,
+        ):
+            return
+
+        def save() -> bool:
+            self.service.unbind_student_cards(student.id, expected_uids=uids)
+            for uid in sorted(uids):
+                self.binding_changed(uid)
+            return True
+
+        if guarded(self, save) is None:
+            self.refresh()
 
     def edit_student(self, edit: bool) -> None:
-        student_id = selected_key(self.students)
+        student_id = self._selected_student_id()
         student = (
             next((s for s in self.service.list_students() if s.id == student_id), None)
             if edit
@@ -203,11 +253,6 @@ class StudentsPane(QWidget):
                     bom=options.bom,
                 ),
             )
-
-    def _selected_bind(self, correction: bool) -> None:
-        uid = selected_key(self.cards)
-        if uid is not None:
-            self.bind_uid(str(uid), correction)
 
     def bind_uid(self, uid: str, correction: bool = False) -> bool:
         card = next((card for card in self.service.list_cards() if card.uid == uid), None)

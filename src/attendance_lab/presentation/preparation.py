@@ -291,11 +291,7 @@ class PreparationPane(QWidget):
         layout.addWidget(self.summary)
         self.tabs = QTabWidget()
         for pane, label in ((schedule, "Дисциплины и занятия"), (students, "Студенты и карты")):
-            pane.setMinimumHeight(640)
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setWidget(pane)
-            self.tabs.addTab(scroll, label)
+            self.tabs.addTab(pane, label)
         layout.addWidget(self.tabs)
 
     def refresh(self):

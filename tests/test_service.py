@@ -495,3 +495,130 @@ def test_unbind_rolls_back_owner_when_audit_write_fails(tmp_path: Path):
             assert connection.execute("SELECT count(*) FROM binding_changes").fetchone()[0] == 1
     finally:
         service.close()
+
+
+def test_unbind_student_cards_removes_all_bindings_with_individual_audit(
+    service: AttendanceService,
+    tmp_path: Path,
+) -> None:
+    service.create_student("Тест", student_id="owner")
+    for uid in (UID, "AABB"):
+        service.bind_card(uid, "owner")
+
+    service.unbind_student_cards("owner", expected_uids={UID, "AABB"})
+
+    assert {card.uid: card.student_id for card in service.repository.list_cards()} == {
+        UID: None,
+        "AABB": None,
+    }
+    with sqlite3.connect(tmp_path / "attendance.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT uid, previous_student_id, student_id, correction, scope "
+            "FROM binding_changes WHERE previous_student_id = 'owner' ORDER BY uid"
+        ).fetchall() == [
+            (UID, "owner", None, 1, "all_history"),
+            ("AABB", "owner", None, 1, "all_history"),
+        ]
+
+
+@pytest.mark.parametrize("expected_uids", [set(), {UID}, {UID, "AABB", "FFEE"}, {"FFEE"}])
+def test_unbind_student_cards_rejects_stale_snapshot_without_any_changes(
+    service: AttendanceService,
+    tmp_path: Path,
+    expected_uids: set[str],
+) -> None:
+    service.create_student("Тест", student_id="owner")
+    for uid in (UID, "AABB"):
+        service.bind_card(uid, "owner")
+    with sqlite3.connect(tmp_path / "attendance.sqlite3") as connection:
+        before = list(connection.iterdump())
+
+    with pytest.raises(AttendanceError, match="изменил|Обновите"):
+        service.unbind_student_cards("owner", expected_uids=expected_uids)
+
+    with sqlite3.connect(tmp_path / "attendance.sqlite3") as connection:
+        assert list(connection.iterdump()) == before
+
+
+def test_unbind_student_cards_requires_existing_student_even_with_empty_snapshot(
+    service: AttendanceService,
+) -> None:
+    with pytest.raises(AttendanceError, match="Студент не найден"):
+        service.unbind_student_cards("missing", expected_uids=set())
+
+
+def test_unbind_student_cards_empty_snapshot_is_noop(
+    service: AttendanceService,
+    tmp_path: Path,
+) -> None:
+    service.create_student("Тест", student_id="owner")
+    with sqlite3.connect(tmp_path / "attendance.sqlite3") as connection:
+        before = list(connection.iterdump())
+
+    service.unbind_student_cards("owner", expected_uids=set())
+
+    with sqlite3.connect(tmp_path / "attendance.sqlite3") as connection:
+        assert list(connection.iterdump()) == before
+
+
+def test_unbind_student_cards_preserves_raw_scans_other_cards_and_manual_marks(
+    service: AttendanceService,
+) -> None:
+    service.create_student("Первый", student_id="owner")
+    service.create_student("Второй", student_id="other")
+    lesson = make_lesson(service)
+    service.open_lesson(lesson.id)
+    for uid, owner in ((UID, "owner"), ("AABB", "owner"), ("CCDD", "other")):
+        service.bind_card(uid, owner)
+        service.record_scan(lesson.id, uid, NOW)
+    service.record_scan(lesson.id, "FFEE", NOW)
+    service.redesign.create_manual_batch(
+        {("owner", lesson.id), ("other", lesson.id)}, "Тестовая ручная отметка"
+    )
+    scans = service.repository.list_scans()
+    batches = service.redesign.list_manual_batches()
+    students = service.list_students()
+
+    service.unbind_student_cards("owner", expected_uids={UID, "AABB"})
+
+    assert service.repository.list_scans() == scans
+    assert service.redesign.list_manual_batches() == batches
+    assert service.list_students() == students
+    assert service.repository.get_card("CCDD").student_id == "other"
+    assert service.repository.get_card("FFEE").student_id is None
+    row = next(
+        row for row in service.report(lesson.discipline_id).rows if row.student.id == "owner"
+    )
+    assert row.cells[0].manual_confirmation
+    assert service.report(lesson.discipline_id).unknown_count == 3
+
+
+def test_unbind_student_cards_rolls_back_all_cards_and_audits_on_second_failure(
+    tmp_path: Path,
+) -> None:
+    class FailingSecondAudit(SQLiteRepository):
+        unbind_writes = 0
+
+        def add_binding_change(self, uid, previous_student_id, student_id, *args, **kwargs):
+            super().add_binding_change(uid, previous_student_id, student_id, *args, **kwargs)
+            if student_id is None:
+                self.unbind_writes += 1
+                if self.unbind_writes == 2:
+                    raise sqlite3.OperationalError("synthetic second audit failure")
+
+    repository = FailingSecondAudit(tmp_path / "synthetic.sqlite3")
+    service = AttendanceService(repository)
+    try:
+        service.create_student("Тест", student_id="owner")
+        for uid in (UID, "AABB"):
+            service.bind_card(uid, "owner")
+        with sqlite3.connect(repository.path) as connection:
+            before = list(connection.iterdump())
+
+        with pytest.raises(sqlite3.OperationalError, match="second audit failure"):
+            service.unbind_student_cards("owner", expected_uids={UID, "AABB"})
+
+        with sqlite3.connect(repository.path) as connection:
+            assert list(connection.iterdump()) == before
+    finally:
+        service.close()

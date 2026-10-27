@@ -319,25 +319,66 @@ def test_switching_queued_card_requires_a_new_explicit_student_selection(window)
     assert workspace.matches.currentItem() is None
 
 
-def test_card_directory_search_cannot_leave_another_card_selected(window):
+def test_student_search_cannot_leave_another_student_selected(window):
     service = window.service
     owner = service.list_students()[0]
     service.bind_card("0011", owner.id)
-    service.bind_card("0022", owner.id)
+    other = service.create_student("Другой студент", "20", "different")
+    service.bind_card("0022", other.id)
     pane = window.students
     pane.refresh()
-    pane.cards.selectRow(1)
-    assert pane.card_action.isEnabled()
-    pane.search.setText("0011")
-    assert pane.cards.rowCount() == 1
-    assert pane.cards.item(0, 0).text() == "0011"
-    assert not pane.card_action.isEnabled()
-    pane.cards.selectRow(0)
-    pane.search.setText("Семёнов")
-    assert pane.cards.rowCount() == 2
-    pane.unknown_only.setChecked(True)
-    assert pane.cards.rowCount() == 0
-    assert not pane.card_action.isEnabled()
+    pane.students.selectRow(0)
+    assert pane.unbind_button.isEnabled()
+    pane.students.clearSelection()
+    assert not pane.unbind_button.isEnabled()
+    pane.students.selectRow(0)
+    pane.search.setText("000123")
+    assert pane.students.rowCount() == 1
+    assert pane.students.item(0, 0).text() == owner.full_name
+    assert not pane.unbind_button.isEnabled()
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+@pytest.mark.parametrize("card_count", [1, 2])
+def test_student_selected_by_name_can_unbind_cards_without_uid(window, confirmed, card_count):
+    from PySide6.QtWidgets import QMessageBox
+
+    service = window.service
+    owner = service.list_students()[0]
+    service.bind_card("0011", owner.id)
+    if card_count == 2:
+        service.bind_card("0022", owner.id)
+    pane = window.students
+    pane.refresh()
+    window.tabs.setCurrentWidget(window.preparation)
+    window.preparation.tabs.setCurrentIndex(1)
+    pane.search.setFocus()
+    QApplication.processEvents()
+    pane.search.setText("семенов")
+    QTest.keyClick(pane.search, Qt.Key.Key_Down)
+    assert pane.students.currentItem().data(Qt.ItemDataRole.UserRole) == owner.id
+    assert pane.unbind_button.isEnabled()
+    shown = []
+
+    def answer():
+        dialog = QApplication.activeModalWidget()
+        shown.append(dialog.text())
+        dialog.done(QMessageBox.StandardButton.Yes if confirmed else QMessageBox.StandardButton.No)
+
+    QTimer.singleShot(0, answer)
+    pane.unbind_button.click()
+    assert shown and owner.full_name in shown[0]
+    if card_count == 2:
+        assert "2" in shown[0] and "ВСЕ" in shown[0]
+    assert all((c.student_id is None) == confirmed for c in service.list_cards())
+    if confirmed:
+        assert not pane.unbind_button.isEnabled()
+        assert pane.students.item(0, 5).text() == "0"
+    assert all(
+        "0011" not in pane.students.item(row, col).text()
+        for row in range(pane.students.rowCount())
+        for col in range(pane.students.columnCount())
+    )
 
 
 def test_keyboard_search_and_results_are_visible_after_scrolling_small_window(window):

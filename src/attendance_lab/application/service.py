@@ -301,6 +301,20 @@ class AttendanceService:
                 uid, card.student_id, None, datetime.now(UTC), correction=True
             )
 
+    def unbind_student_cards(self, student_id: str, *, expected_uids: set[str]) -> None:
+        """Unbind exactly the student's reviewed cards, with one atomic audit trail."""
+        with self.repository.transaction():
+            self._student(student_id)
+            current_uids = {
+                card.uid for card in self.repository.list_cards() if card.student_id == student_id
+            }
+            if current_uids != expected_uids:
+                raise AttendanceError(
+                    "Набор карт студента изменился. Обновите список студентов и повторите действие."
+                )
+            for uid in sorted(current_uids):
+                self.unbind_card(uid, expected_student_id=student_id)
+
     def lesson_log(self, lesson_id: int) -> list[LogRow]:
         with self.repository.transaction(write=False):
             roster = self.get_lesson_roster(lesson_id)

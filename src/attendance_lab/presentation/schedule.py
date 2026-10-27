@@ -48,7 +48,7 @@ class SchedulePane(QWidget):
         self.view_log = view_log
         self.default_timezone = default_timezone
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setContentsMargins(10, 8, 10, 8)
         top = QHBoxLayout()
         top.addWidget(plain_label("Просматриваемая дисциплина"))
         self.discipline = QComboBox()
@@ -64,6 +64,8 @@ class SchedulePane(QWidget):
         )
         self.description = plain_label(wrap=True)
         self.description.setObjectName("Muted")
+        self.description.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.description.setMaximumHeight(self.description.fontMetrics().lineSpacing() * 2)
         layout.addWidget(self.description)
         self.lessons = table(
             (
@@ -88,26 +90,19 @@ class SchedulePane(QWidget):
             if header is not None:
                 header.setToolTip(tooltip)
         self.lessons.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        layout.addWidget(self.lessons, 1)
         layout.addLayout(
             actions(
                 ("Добавить занятие", lambda: self.edit_lesson(False)),
                 ("Изменить занятие", lambda: self.edit_lesson(True)),
                 ("Состав выбранных занятий…", self.lesson_rosters),
+                ("Открыть регистрацию", self._open),
+                ("Приватный журнал", self._logs),
             )
         )
-        layout.addLayout(
-            actions(
-                ("Открыть регистрацию на выбранное занятие", self._open),
-                ("Посмотреть приватный журнал", self._logs),
-            )
+        self.lessons.setToolTip(
+            "Выбор строки — просмотр; регистрация — по кнопке. Несколько занятий: Ctrl / Shift."
         )
-        hint = plain_label(
-            "Выбор дисциплины или строки меняет только просмотр. Регистрация переключается отдельной кнопкой. Для назначения состава нескольким занятиям используйте Ctrl / Shift.",
-            wrap=True,
-        )
-        hint.setObjectName("Muted")
-        layout.addWidget(hint)
+        layout.addWidget(self.lessons, 1)
         self.discipline.currentIndexChanged.connect(lambda *_: self.refresh_lessons())
 
     def refresh(self) -> None:
@@ -134,6 +129,8 @@ class SchedulePane(QWidget):
             if discipline
             else "Создайте дисциплину и занятие. Список студентов можно добавить позднее."
         )
+        self.description.setToolTip(self.description.text())
+        self.description.setVisible(bool(self.description.text().strip()))
         fill_table(
             self.lessons,
             [
