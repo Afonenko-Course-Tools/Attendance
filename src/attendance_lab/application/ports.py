@@ -47,7 +47,7 @@ class AttendanceRepository(Protocol):
         self,
         uid: str,
         previous_student_id: str | None,
-        student_id: str,
+        student_id: str | None,
         changed_at: datetime,
         *,
         correction: bool,

@@ -119,7 +119,7 @@ def cell_text(cell: AttendanceCell, timezone: str) -> str:
     if cell.state == "present" and cell.first_seen:
         at = cell.first_seen.astimezone(ZoneInfo(timezone))
         suffix = " (вне списка)" if cell.outside_roster else ""
-        return f"Был, {at:%H:%M:%S}{suffix}"
+        return f"{'Подтверждено вручную' if cell.manual_confirmation else 'Был'}, {at:%H:%M:%S}{suffix}"
     return {
         "missing": "Нет отметки",
         "expected": "Ожидается",

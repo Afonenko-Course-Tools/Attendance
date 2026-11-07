@@ -76,6 +76,7 @@ class AttendanceCell:
     state: CellState
     first_seen: datetime | None = None
     outside_roster: bool = False
+    manual_confirmation: bool = False
 
 
 @dataclass(frozen=True, slots=True)

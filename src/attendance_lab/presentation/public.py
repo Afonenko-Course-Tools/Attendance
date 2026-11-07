@@ -67,6 +67,14 @@ class PublicWindow(QMainWindow):
         self.headline.setStyleSheet(f"font-size: 46px; font-weight: 700; color: {color};")
         self.person.setStyleSheet(f"font-size: 34px; color: {color}; padding: 20px;")
 
+    def display_update_error(self) -> None:
+        self.timer.stop()
+        self.person.clear()
+        self._set_feedback_color("#fca5a5")
+        self.headline.setText("Проверьте отметку у преподавателя")
+        self.detail.setText("Экран не обновился")
+        self.timer.start(self._timeout_ms)
+
     def display(self, result: PublicResult) -> None:
         self.timer.stop()
         self.person.clear()

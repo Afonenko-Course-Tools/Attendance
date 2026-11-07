@@ -135,3 +135,46 @@ def test_lesson_rejects_unknown_timezone_and_end_before_start():
     dialog.ends_edit.setDateTime(_qt_datetime(datetime(2026, 9, 7, 9, 0)))
     with pytest.raises(ValueError, match="позже начала"):
         dialog.values()
+
+
+def test_correction_can_remove_binding_without_selecting_another_student():
+    from attendance_lab.domain.models import CardInfo
+    from attendance_lab.presentation.dialogs import BindingDialog
+
+    dialog = BindingDialog(
+        CardInfo("0011", "s1", "Анна", 2), [Student("s1", "Анна")], correction=True
+    )
+    dialog.show()
+    dialog.remove_binding.setChecked(True)
+    assert dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+    assert dialog.student_id() is None
+    dialog.accept()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_correction_search_down_enter_explicitly_reassigns_and_cancel_does_not_accept():
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from attendance_lab.domain.models import CardInfo
+    from attendance_lab.presentation.dialogs import BindingDialog
+
+    dialog = BindingDialog(
+        CardInfo("0011", "s1", "Анна", 2),
+        [Student("s1", "Анна"), Student("s2", "Борис")],
+        correction=True,
+    )
+    dialog.show()
+    dialog.activateWindow()
+    QApplication.processEvents()
+    dialog.search.setText("Борис")
+    assert not dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+    QTest.keyClick(dialog.search, Qt.Key.Key_Down)
+    QTest.keyClick(dialog.list_widget, Qt.Key.Key_Return)
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.student_id() == "s2"
+
+    cancelled = BindingDialog(CardInfo("0011", "s1", "Анна", 2), [], correction=True)
+    cancelled.remove_binding.setChecked(True)
+    cancelled.reject()
+    assert cancelled.result() == QDialog.DialogCode.Rejected

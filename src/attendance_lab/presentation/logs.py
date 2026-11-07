@@ -59,7 +59,7 @@ class _FeedbackDelegate(QStyledItemDelegate):
 
 class LogsWindow(QMainWindow):
     def __init__(
-        self, service: AttendanceService, files: CsvPort, bind: Callable[[str, bool], None]
+        self, service: AttendanceService, files: CsvPort, bind: Callable[[str, bool], object]
     ) -> None:
         super().__init__()
         self.service = service

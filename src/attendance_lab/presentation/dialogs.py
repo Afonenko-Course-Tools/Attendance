@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PySide6.QtCore import QDate, QDateTime, Qt, QTime, QTimeZone
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from attendance_lab.domain.models import CardInfo, Discipline, Lesson, Student
+from attendance_lab.presentation.attendance_models import StudentSearch, normalized
 
 if TYPE_CHECKING:
     from attendance_lab.application.files import CsvPort, ImportPreview
@@ -553,12 +556,14 @@ class BindingDialog(QDialog):
         students: list[Student],
         parent: QWidget | None = None,
         correction: bool = False,
+        *,
+        contexts=(),
     ) -> None:
         super().__init__(parent)
         self.card = card
         self.correction = correction
-        self.setWindowTitle("Исправить ошибочную привязку" if correction else "Сопоставить карту")
-        self.resize(660, 550)
+        self.setWindowTitle("Исправить / снять привязку" if correction else "Сопоставить карту")
+        self.resize(720, 620)
         layout = QVBoxLayout(self)
         layout.addWidget(_label(f"Карта: {card.uid}"))
         current = (
@@ -575,48 +580,97 @@ class BindingDialog(QDialog):
             else "Все сохранённые отметки этой карты будут сопоставлены выбранному студенту. "
         )
         layout.addWidget(_label(scope + "Исходные UID и время предъявлений сохраняются."))
-        if correction:
-            layout.addWidget(
-                _label(
-                    "Используйте исправление только для ошибочной привязки. "
-                    "Передача той же карты другому студенту здесь не поддерживается."
-                )
-            )
+        self.replace_binding = QRadioButton("Привязать к &другому студенту")
+        self.remove_binding = QRadioButton("&Снять ошибочную привязку")
+        self.replace_binding.setChecked(True)
+        for button in (self.replace_binding, self.remove_binding):
+            button.setVisible(correction)
+            layout.addWidget(button)
+        self.contexts = {s.student_id: s for s in contexts}
+        self.index = StudentSearch(list(self.contexts.values()) or students)
+        self.course = QComboBox()
+        self.course.addItem("Любой курс", None)
+        for course in sorted({s.course for s in self.contexts.values() if s.course is not None}):
+            self.course.addItem(f"{course} курс", course)
+        owner = self.contexts.get(card.student_id)
+        if owner and owner.course is not None:
+            self.course.setCurrentIndex(self.course.findData(owner.course))
+        self.course.setVisible(bool(self.contexts))
+        layout.addWidget(self.course)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Найти студента по ФИО, группе или ID")
+        self.search.setPlaceholderText("ФИО с опечатками, группа, № зачётки · ↓ к результатам")
         layout.addWidget(self.search)
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         for student in sorted(students, key=lambda value: (value.full_name.casefold(), value.id)):
-            item = QListWidgetItem(_student_text(student), self.list_widget)
+            context = self.contexts.get(student.id)
+            text = (
+                f"{student.full_name} · {context.course or '—'} курс · "
+                f"гр. {context.group_number or '—'} · {context.specialty} · "
+                f"{context.profile} · № зачётки {context.record_book_number or '—'}"
+                if context
+                else _student_text(student)
+            )
+            item = QListWidgetItem(text, self.list_widget)
             item.setData(Qt.ItemDataRole.UserRole, student.id)
         layout.addWidget(self.list_widget, 1)
-        self.confirm = QCheckBox("Подтверждаю исправление принадлежности исторических отметок")
-        self.confirm.setVisible(correction)
-        layout.addWidget(self.confirm)
+        self.status = _label()
+        layout.addWidget(self.status)
         self.buttons = _buttons(self, "Исправить привязку" if correction else "Сопоставить")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Закрыть без изменений")
         layout.addWidget(self.buttons)
         self.search.textChanged.connect(self._filter)
+        self.course.currentIndexChanged.connect(lambda *_: self._filter(self.search.text()))
         self.list_widget.itemSelectionChanged.connect(self._update_button)
-        self.confirm.toggled.connect(self._update_button)
+        self.remove_binding.toggled.connect(self._update_button)
+        self.next_match = QShortcut(QKeySequence("Down"), self.search)
+        self.next_match.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.next_match.activated.connect(self._focus_matches)
+        self.list_widget.itemActivated.connect(lambda *_: self.accept())
         if not students:
             layout.insertWidget(
                 3, _label("Сначала добавьте студентов вручную или импортируйте CSV.")
             )
-        self._update_button()
+        self._filter("")
+        self.search.setFocus()
 
     def _filter(self, text: str) -> None:
-        text = text.strip().casefold()
+        query = normalized(text).strip()
+        found = {s.student_id if self.contexts else s.id for s in self.index.find(query)}
         for index in range(self.list_widget.count()):
             item = self.list_widget.item(index)
-            item.setHidden(text not in item.text().casefold())
+            student_id = item.data(Qt.ItemDataRole.UserRole)
+            context = self.contexts.get(student_id)
+            matches = student_id in found or all(
+                word in normalized(item.text()) for word in query.split()
+            )
+            course_matches = self.course.currentData() is None or (
+                context is not None and context.course == self.course.currentData()
+            )
+            item.setHidden(not matches or not course_matches)
             if item.isHidden():
                 item.setSelected(False)
         self._update_button()
 
+    def _focus_matches(self) -> None:
+        first = next(
+            (
+                self.list_widget.item(i)
+                for i in range(self.list_widget.count())
+                if not self.list_widget.item(i).isHidden()
+            ),
+            None,
+        )
+        if first:
+            self.list_widget.setFocus()
+            self.list_widget.setCurrentItem(first)
+
     def _update_button(self, *_args: Any) -> None:
+        removing = self.correction and self.remove_binding.isChecked()
+        for widget in (self.search, self.course, self.list_widget):
+            widget.setEnabled(not removing)
         selected = self.list_widget.selectedItems()
-        permitted = bool(selected) and (not self.correction or self.confirm.isChecked())
+        permitted = bool(selected)
         if selected and self.correction:
             permitted = (
                 permitted and selected[0].data(Qt.ItemDataRole.UserRole) != self.card.student_id
@@ -626,9 +680,30 @@ class BindingDialog(QDialog):
                 bool(selected)
                 and selected[0].data(Qt.ItemDataRole.UserRole) == self.card.student_id
             )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(permitted)
+        button = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        button.setText(
+            "Снять привязку"
+            if removing
+            else ("Исправить привязку" if self.correction else "Сопоставить")
+        )
+        button.setEnabled(removing or permitted)
+        if removing:
+            self.status.setText(
+                "Карта станет несопоставленной. Её предъявления сохранятся; "
+                "посещения по этой карте больше не будут приписаны текущему студенту."
+            )
+        elif not selected:
+            self.status.setText("Найдите студента, нажмите ↓, выберите ФИО и Enter.")
+        elif not permitted:
+            self.status.setText(
+                "Это текущий владелец карты. Выберите другого студента или снимите привязку."
+            )
+        else:
+            self.status.setText("Новая привязка: " + selected[0].text() + ". Enter — применить.")
 
-    def student_id(self) -> str:
+    def student_id(self) -> str | None:
+        if self.correction and self.remove_binding.isChecked():
+            return None
         items = self.list_widget.selectedItems()
         if not items:
             raise ValueError("Выберите студента.")

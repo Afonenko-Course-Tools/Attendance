@@ -1,7 +1,7 @@
 """A complete light Qt theme for operator windows and their dialogs."""
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
 
@@ -11,6 +11,7 @@ def apply_light_theme(app: QApplication) -> None:
     app.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
     app.styleHints().setColorScheme(Qt.ColorScheme.Light)
     app.setStyle("Fusion")
+    app.setFont(QFont("Arial", 10))
     palette = QPalette()
     colors = {
         QPalette.ColorRole.Window: "#f3f6fa",
