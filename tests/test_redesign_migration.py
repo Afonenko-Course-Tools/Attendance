@@ -51,7 +51,7 @@ def test_v2_upgrade_preserves_audit_ids_and_permits_audited_unbinding(tmp_path):
     try:
         assert logical_rows(path, ("binding_changes", "scans", "cards")) == before
         with sqlite3.connect(path) as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         backups = list(tmp_path.glob("synthetic-v2.before-migration.*.sqlite3"))
         assert len(backups) == 1
         assert logical_rows(backups[0], ("binding_changes", "scans", "cards")) == before

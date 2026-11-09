@@ -113,6 +113,8 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
     window.event_timer.stop()
     window.show()
     app.processEvents()
+    assert not window.workspace.confirm_button.isVisible()
+    window.workspace.open_search()
     for width, height in ((980, 720), (1366, 768)):
         window.resize(width, height)
         app.processEvents()
@@ -143,7 +145,9 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
     assert window.workspace.search.cursorPosition() == 2
     assert window.workspace.selected_ids() == ids
     assert window.workspace.pinned_uid == "0011"
-    assert window.tabs.count() == 4
+    assert [
+        window.tabs.tabText(i) for i in range(window.tabs.count()) if window.tabs.isTabVisible(i)
+    ] == ["Занятие", "Курс", "Журнал", "Настройки"]
     window.workspace.pinned_uid = None
     window.workspace.pending_uids.clear()
     window.workspace.queue.clear()

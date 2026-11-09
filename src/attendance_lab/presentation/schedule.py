@@ -29,6 +29,10 @@ from attendance_lab.presentation.dialogs import (
     LessonDialog,
     StudentSelectionDialog,
 )
+from attendance_lab.presentation.lesson_lifecycle import (
+    delete_lesson_dialog,
+    restore_lessons_dialog,
+)
 
 
 class SchedulePane(QWidget):
@@ -99,6 +103,15 @@ class SchedulePane(QWidget):
                 ("Приватный журнал", self._logs),
             )
         )
+        layout.addLayout(
+            actions(
+                ("Удалить выбранное…", self.delete_selected),
+                (
+                    "Удалённые занятия…",
+                    lambda: restore_lessons_dialog(self, self.service, self.changed),
+                ),
+            )
+        )
         self.lessons.setToolTip(
             "Выбор строки — просмотр; регистрация — по кнопке. Несколько занятий: Ctrl / Shift."
         )
@@ -120,7 +133,9 @@ class SchedulePane(QWidget):
 
     def refresh_lessons(self) -> None:
         discipline_id = self.discipline.currentData()
-        lessons = self.service.list_lessons(discipline_id) if discipline_id is not None else []
+        lessons = (
+            self.service.list_source_lessons(discipline_id) if discipline_id is not None else []
+        )
         discipline = next(
             (d for d in self.service.list_disciplines() if d.id == discipline_id), None
         )
@@ -298,3 +313,6 @@ class SchedulePane(QWidget):
             self.changed()
 
         guarded(self, save)
+
+    def delete_selected(self):
+        delete_lesson_dialog(self, self.service, self.selected_lesson_id(), self.changed)

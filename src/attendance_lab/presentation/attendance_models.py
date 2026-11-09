@@ -13,6 +13,7 @@ def normalized(value):
 
 class StudentSearch:
     def __init__(self, students):
+        self.whole_block = False
         self.students = list(students)
         self.entries = [
             (
@@ -129,6 +130,7 @@ class StudentSearch:
 
 
 class StudentModel(QAbstractTableModel):
+    whole_block: bool = False
     headers = ("ФИО", "Зачётная книжка", "Группа", "Курс", "Специальность", "Профиль", "Подгруппа")
     keys = (
         "full_name",
@@ -164,7 +166,11 @@ class StudentModel(QAbstractTableModel):
             return (
                 self.headers[section]
                 if section < len(self.headers)
-                else f"Пара #{self.pair_ids[section - len(self.headers)]}"
+                else (
+                    "Посещение занятия"
+                    if getattr(self, "whole_block", False)
+                    else f"Пара #{self.pair_ids[section - len(self.headers)]}"
+                )
             )
         return None
 

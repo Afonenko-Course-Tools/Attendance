@@ -129,18 +129,18 @@ def test_slots_and_student_roster_validation(lab):
     with pytest.raises(AttendanceError):
         api.schedule_block(roster.id, date(2026, 9, 1), 8)
     group = api.list_groups()[0]
-    with pytest.raises(AttendanceError):
-        api.save_roster(
-            discipline.id,
-            group.academic_year_id,
-            1,
-            "Некорректный",
-            "lab",
-            1,
-            "groups",
-            {group.id},
-            set(),
-        )
+    single = api.save_roster(
+        discipline.id,
+        group.academic_year_id,
+        1,
+        "Некорректный",
+        "lab",
+        1,
+        "groups",
+        {group.id},
+        set(),
+    )
+    assert single.duration == 1
 
 
 def test_bulk_mark_accepts_exact_current_block_pairs_without_creating_scans(lab):

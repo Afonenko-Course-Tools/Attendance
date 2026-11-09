@@ -32,13 +32,26 @@ from attendance_lab.domain.rules import (
 )
 
 if TYPE_CHECKING:
+    from attendance_lab.application.course_workflow import CourseWorkflow
+    from attendance_lab.application.grading import GradingService
     from attendance_lab.application.redesign import RedesignService
 
 
 class AttendanceService:
     def __init__(self, repository: AttendanceRepository) -> None:
         self.repository = repository
+        self._lifecycle_service = None
         self._redesign_service: RedesignService | None = None
+        self._course_service: CourseWorkflow | None = None
+        self._grading_service: GradingService | None = None
+
+    @property
+    def lifecycle(self):
+        from attendance_lab.application.lesson_lifecycle import LessonLifecycle
+
+        if self._lifecycle_service is None:
+            self._lifecycle_service = LessonLifecycle(self)
+        return self._lifecycle_service
 
     @property
     def redesign(self) -> RedesignService:
@@ -47,6 +60,22 @@ class AttendanceService:
         if self._redesign_service is None:
             self._redesign_service = RedesignService(self)
         return self._redesign_service
+
+    @property
+    def courses(self) -> CourseWorkflow:
+        from attendance_lab.application.course_workflow import CourseWorkflow
+
+        if self._course_service is None:
+            self._course_service = CourseWorkflow(self)
+        return self._course_service
+
+    @property
+    def grading(self) -> GradingService:
+        from attendance_lab.application.grading import GradingService
+
+        if self._grading_service is None:
+            self._grading_service = GradingService(self)
+        return self._grading_service
 
     def _discipline(self, discipline_id: int) -> Discipline:
         discipline = self.repository.get_discipline(discipline_id)
@@ -81,7 +110,28 @@ class AttendanceService:
         return result
 
     def list_lessons(self, discipline_id: int | None = None) -> list[Lesson]:
-        return self.repository.list_lessons(discipline_id)
+        deleted = self.lifecycle.deleted_ids()
+        return [
+            lesson
+            for lesson in self.repository.list_lessons(discipline_id)
+            if lesson.id not in deleted
+        ]
+
+    def list_source_lessons(self, discipline_id: int | None = None) -> list[Lesson]:
+        bound_blocks = {
+            lesson.block_id
+            for course in self.courses.list_courses()
+            for lesson in self.courses.list_lessons(course.id)
+        }
+        bound_pairs = {
+            pair
+            for block in self.redesign.list_blocks()
+            if block.id in bound_blocks
+            for pair in block.pair_ids
+        }
+        return [
+            lesson for lesson in self.list_lessons(discipline_id) if lesson.id not in bound_pairs
+        ]
 
     def get_lesson(self, lesson_id: int) -> Lesson:
         lesson = self.repository.get_lesson(lesson_id)
@@ -137,6 +187,7 @@ class AttendanceService:
 
     def open_lesson(self, lesson_id: int) -> Lesson:
         with self.repository.transaction():
+            self.lifecycle.require_live(lesson_id)
             lesson = self.get_lesson(lesson_id)
             for session in self.redesign.store.rd_sessions():
                 if session.closed_at is None:
@@ -413,7 +464,7 @@ class AttendanceService:
             discipline = self._discipline(discipline_id)
             lessons = tuple(
                 lesson
-                for lesson in self.repository.list_lessons(discipline_id)
+                for lesson in self.list_lessons(discipline_id)
                 if (date_from is None or self._lesson_date(lesson) >= date_from)
                 and (date_to is None or self._lesson_date(lesson) <= date_to)
             )

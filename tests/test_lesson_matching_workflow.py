@@ -169,7 +169,9 @@ def test_manual_actions_also_work_for_the_current_standalone_lesson(window, monk
 
 
 @pytest.mark.parametrize("transition", ["close", "switch"])
-def test_manual_draft_cannot_silently_credit_a_previous_registration(window, transition):
+def test_manual_draft_credits_explicit_viewed_lesson_independent_of_registration(
+    window, transition
+):
     now = datetime.now(UTC)
     discipline = window.service.list_disciplines()[0]
     old = window.service.save_lesson(
@@ -208,7 +210,7 @@ def test_manual_draft_cannot_silently_credit_a_previous_registration(window, tra
     try:
         workspace.confirm_match()
         student = window.service.list_students()[0]
-        assert window.service.redesign.evidence(student.id, old.id) == []
+        assert len(window.service.redesign.evidence(student.id, old.id)) == 1
         assert window.service.redesign.evidence(student.id, current.id) == []
     finally:
         dismiss.stop()
@@ -350,7 +352,8 @@ def test_student_selected_by_name_can_unbind_cards_without_uid(window, confirmed
         service.bind_card("0022", owner.id)
     pane = window.students
     pane.refresh()
-    window.tabs.setCurrentWidget(window.preparation)
+    window.tabs.setCurrentWidget(window.course_workspace)
+    window.course_workspace.tabs.setCurrentWidget(window.preparation)
     window.preparation.tabs.setCurrentIndex(1)
     pane.search.setFocus()
     QApplication.processEvents()

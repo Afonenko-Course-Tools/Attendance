@@ -38,6 +38,7 @@ from attendance_lab.presentation.common import (
     plain_label,
     private_message,
 )
+from attendance_lab.presentation.course_workspace import CourseWorkspace
 from attendance_lab.presentation.history import HistoryPane
 from attendance_lab.presentation.lesson_workspace import LessonWorkspace
 from attendance_lab.presentation.logs import LogsWindow
@@ -145,8 +146,36 @@ class MainWindow(QMainWindow):
         self.students.binding_changed = self.card_binding_changed
         self.history.evidence_changed = self.refresh_evidence
         self.tabs.addTab(self.workspace, "Занятие")
-        self.tabs.addTab(self.preparation, "Подготовка")
-        self.tabs.addTab(self.history, "История")
+        self.course_workspace = CourseWorkspace(
+            service, self.refresh, self.workspace, self.preparation, self, files=files
+        )
+        self.tabs.addTab(self.course_workspace, "Курс")
+        # The course selector remains visible in every workspace.
+        course_layout = self.course_workspace.layout()
+        assert isinstance(course_layout, QVBoxLayout)
+        course_layout.removeWidget(self.course_workspace.courses)
+        layout.insertWidget(2, self.course_workspace.courses)
+        attendance = self.course_workspace.journal_pane
+        assert attendance is not None
+        self.course_workspace.tabs.removeTab(self.course_workspace.tabs.indexOf(attendance))
+        self.course_journal = QTabWidget()
+        self.course_journal.addTab(attendance, "Посещения")
+        self.course_journal.addTab(self.course_workspace.grading, "Работы")
+        self.tabs.addTab(self.course_journal, "Журнал")
+        self.calculation_pane = QTabWidget()
+        grading_tabs = self.course_workspace.grading.tabs
+        while grading_tabs.count() > 1:
+            page = grading_tabs.widget(1)
+            assert page is not None
+            label = grading_tabs.tabText(1)
+            grading_tabs.removeTab(1)
+            self.calculation_pane.addTab(page, label)
+        self.tabs.addTab(self.calculation_pane, "Расчёт")
+        self.tabs.setTabVisible(self.tabs.indexOf(self.calculation_pane), False)
+        self.history.setWindowFlag(Qt.WindowType.Window, True)
+        history_button = QPushButton("История исходных занятий…")
+        history_button.clicked.connect(self.history.show)
+        course_layout.insertWidget(2, history_button)
         settings = self._settings()
         settings_layout = settings.layout()
         assert isinstance(settings_layout, QVBoxLayout)
@@ -284,6 +313,31 @@ class MainWindow(QMainWindow):
             return ""
         lesson = self.service.get_lesson(lesson_id)
         names = {d.id: d.name for d in self.service.list_disciplines()}
+        if self.controller.active_session_id is not None:
+            session = self.service.redesign.get_session(self.controller.active_session_id)
+            block = self.service.redesign.get_block(session.block_id)
+            roster = next(
+                r for r in self.service.redesign.list_rosters() if r.id == block.roster_id
+            )
+            course = next(
+                (
+                    course
+                    for course in self.service.courses.list_courses()
+                    if any(
+                        item.block_id == block.id
+                        for item in self.service.courses.list_lessons(course.id)
+                    )
+                ),
+                None,
+            )
+            start = min(self.service.get_lesson(pair).starts_at for pair in block.pair_ids)
+            end = max(self.service.get_lesson(pair).ends_at for pair in block.pair_ids)
+            zone = ZoneInfo(block.timezone)
+            return (
+                f"{course.name if course else names.get(lesson.discipline_id, '')} · "
+                f"{start.astimezone(zone):%d.%m.%Y %H:%M}–{end.astimezone(zone):%H:%M} · "
+                f"{block.title or roster.name} · {roster.name}"
+            )
         return lesson_label(lesson, names.get(lesson.discipline_id, ""))
 
     def _refresh_context(self) -> None:
@@ -293,10 +347,8 @@ class MainWindow(QMainWindow):
             + (active_label or "закрыта — выберите занятие и откройте регистрацию")
         )
         if self.controller.active_session_id is not None:
-            session = self.service.redesign.get_session(self.controller.active_session_id)
-            block = self.service.redesign.get_block(session.block_id)
             self.active_banner.setText(
-                f"● Регистрация открыта · сеанс #{session.id} · блок #{block.id} · пары {session.target_pair_ids} · {active_label} · устройство: {self.reader_status}"
+                f"● Регистрация открыта · {active_label} · считыватель: {self.reader_status}"
             )
         self.stop_button.setEnabled(self.controller.active_lesson_id is not None)
         self.public_window.set_lesson(
@@ -316,6 +368,7 @@ class MainWindow(QMainWindow):
         self.reports.refresh()
         self.workspace.refresh()
         self.preparation.refresh()
+        self.course_workspace.refresh()
         self.history.refresh()
         self._refresh_context()
 
@@ -325,10 +378,12 @@ class MainWindow(QMainWindow):
         self.process_events()
         self._refresh_context()
         self.workspace.update_counts()
+        self.course_workspace.update_attendance()
         self.history.update_evidence()
 
     def refresh_evidence(self) -> None:
         self.workspace.update_counts()
+        self.course_workspace.update_attendance()
         self.history.update_evidence()
         self.schedule.update_counts()
 
@@ -368,6 +423,11 @@ class MainWindow(QMainWindow):
                         self.history.update_evidence(set(session.target_pair_ids))
                     else:
                         self.history.update_evidence({event.scan.lesson_id})
+                    self.course_workspace.update_attendance(
+                        set(session.target_pair_ids)
+                        if event.scan.session_id is not None
+                        else {event.scan.lesson_id}
+                    )
                     self.workspace.scan(event.scan, event.result)
                     self.schedule.update_counts(event.scan.lesson_id)
                 elif event.kind == "failed" and event.lesson_id is not None:
@@ -585,4 +645,6 @@ class MainWindow(QMainWindow):
         self.public_window.close()
         self.logs_window.close()
         self.embedded_log.close()
+        self.history.close()
+        self.preparation.schedule_window.close()
         event.accept()

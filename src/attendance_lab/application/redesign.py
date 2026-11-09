@@ -100,8 +100,6 @@ class RedesignService(CatalogUseCases):
             or mode not in ("groups", "students")
         ):
             raise AttendanceError("Неверные параметры учебного состава.")
-        if kind == "lab" and duration != 2:
-            raise AttendanceError("Лабораторная занимает две пары.")
         groups = [g for g in self.list_groups(academic_year_id) if g.id in group_ids]
         if not groups or len(groups) != len(group_ids) or len({g.course for g in groups}) != 1:
             raise AttendanceError("Выберите группы одного года и курса.")
@@ -169,7 +167,10 @@ class RedesignService(CatalogUseCases):
         return [
             replace(c, subgroup=roster.name if roster.mode == "students" else "")
             for c in self.list_student_contexts(roster.academic_year_id)
-            if c.group_id in roster.group_ids
+            if (
+                c.group_id in roster.group_ids
+                or (roster.mode == "students" and not roster.group_ids)
+            )
             and (roster.mode == "groups" or c.student_id in roster.student_ids)
         ]
 
@@ -231,10 +232,13 @@ class RedesignService(CatalogUseCases):
         self, on_date: date | None = None, discipline_id: int | None = None
     ) -> list[ScheduledBlock]:
         roster_ids = {r.id for r in self.list_rosters(discipline_id)}
+        deleted = self.service.lifecycle.deleted_ids()
         return [
             b
             for b in self.store.rd_blocks()
-            if (on_date is None or b.date == on_date) and b.roster_id in roster_ids
+            if (on_date is None or b.date == on_date)
+            and b.roster_id in roster_ids
+            and not deleted.intersection(b.pair_ids)
         ]
 
     def get_block(self, block_id: int) -> ScheduledBlock:
@@ -279,6 +283,8 @@ class RedesignService(CatalogUseCases):
 
     def open_session(self, block_id: int, target_pair_ids: set[int]) -> RegistrationSession:
         block = self.get_block(block_id)
+        for pair in block.pair_ids:
+            self.service.lifecycle.require_live(pair)
         if not target_pair_ids or not target_pair_ids <= set(block.pair_ids):
             raise AttendanceError("Выберите одну или обе пары блока.")
         with self.service.repository.transaction():

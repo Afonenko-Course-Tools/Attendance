@@ -43,6 +43,9 @@ class CsvPort(Protocol):
         delimiter: str = ";",
         bom: bool = True,
     ) -> None: ...
+    def export_xlsx(
+        self, path: Path, headers: Sequence[object], rows: Iterable[Sequence[object]]
+    ) -> None: ...
     def export_log(
         self, path: Path, lesson: Lesson, rows: list[LogRow], delimiter: str = ";", bom: bool = True
     ) -> None: ...

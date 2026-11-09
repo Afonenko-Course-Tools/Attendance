@@ -4,6 +4,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QListWidget, QVBoxLayout
 
+from attendance_lab.presentation.common import guarded
+
 
 class Commands:
     def __init__(self, window):
@@ -13,7 +15,7 @@ class Commands:
         definitions = [
             ("Команды", "F1", self.show),
             ("Отложить карту / выйти из ручного поиска", "Escape", window.workspace.defer),
-            ("Ручная отметка активного сеанса", "F2", window.workspace.start_manual),
+            ("Ручная отметка выбранного занятия", "F2", window.workspace.start_manual),
             ("Поиск на экране", "F3", self.search),
             ("Исправить последнюю карту", "F4", window.workspace.correct_last_card),
             ("Следующая область", "F6", lambda: self.focus_region(1)),
@@ -59,17 +61,28 @@ class Commands:
 
     def search(self):
         widget = self.window.tabs.currentWidget()
-        if widget is self.window.preparation:
+        if widget is self.window.course_workspace:
+            self.window.course_workspace.tabs.setCurrentWidget(self.window.preparation)
+            self.window.preparation.tabs.setCurrentWidget(self.window.students)
             widget = self.window.students
-            self.window.preparation.tabs.setCurrentIndex(1)
+        elif widget is self.window.course_journal:
+            widget = widget.currentWidget()
+            if widget is self.window.course_workspace.journal_pane:
+                field = getattr(self.window.course_workspace, "journal_search", None)
+                if field is not None:
+                    field.setFocus()
+                    field.selectAll()
+                    return
+        if hasattr(widget, "open_search"):
+            widget.open_search()
         field = getattr(widget, "search", None)
-        if field:
+        if field is not None:
             field.setFocus()
             field.selectAll()
 
     def focus_region(self, direction):
         current = self.window.tabs.currentWidget()
-        regions = [self.window.tabs]
+        regions = [self.window.course_workspace.courses, self.window.tabs.tabBar()]
         if current is self.window.workspace:
             regions += [
                 current.blocks,
@@ -79,24 +92,39 @@ class Commands:
                 current.matches,
                 current.queue,
             ]
-        elif current is self.window.history:
-            regions += [current.discipline, current.search, current.matrix]
-        elif current is self.window.preparation:
-            regions += (
-                [current.tabs.tabBar(), self.window.schedule.discipline]
-                if current.tabs.currentIndex() == 0
-                else [
-                    current.tabs.tabBar(),
+        elif current is self.window.course_workspace:
+            regions += [current.tabs.tabBar()]
+            child = current.tabs.currentWidget()
+            if child is self.window.preparation:
+                regions += [
+                    child.tabs.tabBar(),
                     self.window.students.search,
                     self.window.students.students,
                 ]
-            )
+            else:
+                regions += [current.topics, current.members, current.lessons]
+        elif current is self.window.course_journal:
+            regions += [
+                current.tabBar(),
+                self.window.course_workspace.journal,
+                self.window.course_workspace.grading.journal,
+            ]
+        elif current is self.window.calculation_pane:
+            regions += [current.tabBar(), self.window.course_workspace.grading.changes]
         else:
             regions += [self.window.readers, self.window.screens]
+        regions = [widget for widget in regions if widget.isVisible() and widget.isEnabled()]
+        if not regions:
+            return
         focused = QApplication.focusWidget()
-        if focused is self.window.tabs.tabBar():
-            focused = self.window.tabs
-        index = regions.index(focused) if focused in regions else -1
+        index = next(
+            (
+                i
+                for i, widget in enumerate(regions)
+                if widget is focused or widget.isAncestorOf(focused)
+            ),
+            -1,
+        )
         regions[(index + direction) % len(regions)].setFocus()
 
     def confirm(self):
@@ -108,5 +136,11 @@ class Commands:
                 self.window.workspace.manual_block()
             else:
                 self.window.workspace.confirm_match()
-        elif self.window.tabs.currentWidget() is self.window.history:
-            self.window.history.manual()
+        elif self.window.tabs.currentWidget() is self.window.course_journal:
+            if (
+                self.window.course_journal.currentWidget()
+                is self.window.course_workspace.journal_pane
+            ):
+                self.window.course_workspace.mark_rectangle()
+            else:
+                guarded(self.window, self.window.course_workspace.grading.open_report)
