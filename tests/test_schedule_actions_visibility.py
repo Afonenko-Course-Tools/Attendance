@@ -55,7 +55,11 @@ def test_schedule_actions_stay_above_scrolling_rows_at_minimum_window(tmp_path, 
         assert (window.width(), window.height()) == size
         host = window.preparation.schedule_window
         host.resize(*size)
-        QTest.mouseClick(window.preparation.source_schedule_button, Qt.MouseButton.LeftButton)
+        assert all(
+            window.preparation.tabs.tabText(index) != "Исходное расписание"
+            for index in range(window.preparation.tabs.count())
+        )
+        host.show()
         app.processEvents()
         pane = window.schedule
         assert pane.lessons.horizontalHeader().isVisible()

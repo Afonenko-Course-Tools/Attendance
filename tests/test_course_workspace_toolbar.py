@@ -191,7 +191,7 @@ def test_lecture_has_one_stream_no_subgroup_ui_and_cancel_does_not_write(workspa
     assert "Состав" not in labels
 
 
-def test_unknown_subgroup_snapshot_is_explained_and_not_counted(workspace):
+def test_assigned_subgroup_is_used_when_legacy_snapshot_is_empty(workspace):
     from dataclasses import replace
 
     pane, service, course, students, first, _ = workspace
@@ -203,11 +203,87 @@ def test_unknown_subgroup_snapshot_is_explained_and_not_counted(workspace):
         pair = service.get_lesson(block.pair_ids[0])
         service.repository.put_lesson(replace(pair, roster_fixed=True))
     pane.show_course()
-    assert pane.missed_topics[students[0].student_id] == set()
-    assert pane.journal_notice.isVisibleTo(pane.journal_pane)
-    assert "не указан состав" in pane.journal_notice.text()
+    assert pane.missed_topics[students[0].student_id] == {occurrence.topic_id}
+    assert pane.missed_topics[students[1].student_id] == set()
+    assert not pane.journal_notice.isVisibleTo(pane.journal_pane)
     pane.journal.setCurrentCell(0, 7)
     assert not pane.tools["mark"].isEnabled()
+
+
+def test_migrated_expected_ids_and_unknown_topics_have_distinct_counts(workspace):
+    from dataclasses import replace
+
+    pane, service, course, students, first, _ = workspace
+    past = datetime.now(ZoneInfo("Europe/Minsk")).date() - timedelta(days=7)
+    known = service.courses.schedule(course.id, first.id, 1, past, 1)
+    with service.repository.transaction():
+        unassigned = service.repository.rd_save_roster(
+            replace(first, id=0, name="Состав не назначен", group_ids=(), student_ids=())
+        )
+    service.courses.add_roster(course.id, unassigned.id)
+    unknown = service.courses.schedule(course.id, unassigned.id, 2, past, 3)
+    for occurrence, ids in ((known, {students[0].student_id}), (unknown, set())):
+        block = service.redesign.get_block(occurrence.block_id)
+        with service.repository.transaction():
+            for pair in block.pair_ids:
+                service.repository.put_lesson(replace(service.get_lesson(pair), roster_fixed=True))
+                service.repository.put_lesson_roster(pair, ids)
+    pane.show_course()
+
+    def counts():
+        return {
+            pane.journal.item(row, 0).data(Qt.ItemDataRole.UserRole): pane.journal.item(
+                row, pane.journal.columnCount() - 1
+            ).text()
+            for row in range(pane.journal.rowCount())
+        }
+
+    assert counts() == {students[0].student_id: "≥1", students[1].student_id: "—"}
+    pane.journal_status.setCurrentIndex(1)
+    assert [
+        pane.journal.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        for row in range(pane.journal.rowCount())
+        if not pane.journal.isRowHidden(row)
+    ] == [students[0].student_id]
+    for occurrence in (known, unknown):
+        block = service.redesign.get_block(occurrence.block_id)
+        service.redesign.create_manual_batch(
+            {(students[0].student_id, pair) for pair in block.pair_ids}, "Учебная отметка"
+        )
+    pane.update_attendance()
+    assert counts() == {students[0].student_id: "0", students[1].student_id: "—"}
+
+
+def test_journal_name_column_stays_compact_and_can_be_resized(workspace):
+    from PySide6.QtWidgets import QHeaderView
+
+    pane, _, _, _, _, _ = workspace
+    pane.resize(1600, 700)
+    pane.tabs.setCurrentWidget(pane.journal_pane)
+    QApplication.processEvents()
+    assert (
+        pane.journal.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    )
+    assert pane.journal.columnWidth(0) == 300
+    pane.journal.setColumnWidth(0, 340)
+    pane.show_course()
+    assert pane.journal.columnWidth(0) == 340
+    assert pane.journal.item(0, 0).toolTip() == pane.journal.item(0, 0).text()
+
+
+def test_incomplete_absence_counts_sort_numerically(workspace):
+    from PySide6.QtWidgets import QTableWidget
+
+    from attendance_lab.presentation.course_journal import AbsenceCountItem
+
+    listing = QTableWidget(3, 1)
+    try:
+        for row, count in enumerate((10, 0, 2)):
+            listing.setItem(row, 0, AbsenceCountItem(str(row), set(range(count)), {100}))
+        listing.sortItems(0, Qt.SortOrder.AscendingOrder)
+        assert [listing.item(row, 0).text() for row in range(3)] == ["—", "≥2", "≥10"]
+    finally:
+        listing.close()
 
 
 def test_new_and_copied_course_become_the_selected_course(workspace, monkeypatch):
@@ -266,7 +342,7 @@ def test_filtering_selected_student_disables_mark_without_losing_identity(worksp
     assert pane.tools["mark"].isEnabled()
 
 
-def test_fixed_lecture_snapshot_does_not_add_absence_for_later_joiner(workspace):
+def test_lecture_uses_selected_year_and_study_course_even_with_older_snapshot(workspace):
     pane, service, course, students, _, _ = workspace
     groups = service.redesign.list_groups()
     lecture = service.courses.save_course(
@@ -288,10 +364,10 @@ def test_fixed_lecture_snapshot_does_not_add_absence_for_later_joiner(workspace)
     pane.courses.setCurrentIndex(pane.courses.findData(lecture.id))
     assert pane.missed_topics[students[0].student_id] == {occurrence.topic_id}
     assert pane.missed_topics[students[1].student_id] == {occurrence.topic_id}
-    assert pane.missed_topics[students[2].student_id] == set()
+    assert pane.missed_topics[students[2].student_id] == {occurrence.topic_id}
 
 
-def test_fixed_empty_lecture_snapshot_is_unknown_instead_of_whole_stream(workspace):
+def test_fixed_empty_lecture_snapshot_uses_whole_selected_stream(workspace):
     from dataclasses import replace
 
     pane, service, course, students, _, _ = workspace
@@ -320,5 +396,76 @@ def test_fixed_empty_lecture_snapshot_is_unknown_instead_of_whole_stream(workspa
         )
     pane.refresh()
     pane.courses.setCurrentIndex(pane.courses.findData(lecture.id))
-    assert all(pane.missed_topics[student.student_id] == set() for student in students)
-    assert not pane.journal_notice.isHidden()
+    assert all(
+        pane.missed_topics[student.student_id] == {occurrence.topic_id} for student in students
+    )
+    assert pane.journal_notice.isHidden()
+
+
+def test_new_lecture_cohort_is_ready_without_an_artificial_subgroup(workspace):
+    pane, service, original, _, _, _ = workspace
+    lecture = service.courses.save_course(
+        original.discipline_id, original.academic_year_id, 1, 2, "lecture", 1, "Общий поток"
+    )
+    service.courses.save_topic(lecture.id, 1, "Первая лекция")
+    pane.refresh()
+    pane.courses.setCurrentIndex(pane.courses.findData(lecture.id))
+    assert pane.members.rowCount() == 1
+    assert pane.members.item(0, 0).text() == "Общий поток"
+    assert int(pane.members.item(0, 2).text()) == len(service.courses.list_students(lecture.id))
+    assert pane.tools["schedule"].isEnabled()
+    assert not pane.tools["groups"].isVisible()
+    assert not pane.tools["subgroup"].isVisible()
+    assert not pane.tools["edit_groups"].isVisible()
+
+
+@pytest.mark.parametrize(("kind", "duration"), [("lecture", 1), ("lab", 2), ("seminar", 2)])
+def test_scheduling_uses_course_format_and_duration_with_only_start_pair(
+    workspace, monkeypatch, kind, duration
+):
+    from PySide6.QtWidgets import QFormLayout
+
+    pane, service, original, _, _, _ = workspace
+    course = service.courses.save_course(
+        original.discipline_id,
+        original.academic_year_id,
+        1,
+        2,
+        kind,
+        duration,
+        "Курс с заданным форматом",
+    )
+    group = service.redesign.list_groups()[0]
+    service.courses.add_groups(course.id, {group.id})
+    service.courses.save_topic(course.id, 1, "Тема по общей программе")
+    pane.refresh()
+    pane.courses.setCurrentIndex(pane.courses.findData(course.id))
+
+    def accept(dialog):
+        fields = {}
+        for row in range(dialog.form.rowCount()):
+            label_item = dialog.form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            field_item = dialog.form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            if label_item and isinstance(label_item.widget(), QLabel) and field_item:
+                fields[label_item.widget().text()] = field_item.widget()
+        assert not {"Тип", "Формат", "Длительность", "Длительность, пар", "Пары"}.intersection(
+            fields
+        )
+        slot = fields["Начальная пара"]
+        assert isinstance(slot, QComboBox)
+        assert slot.count() == 9 - duration
+        assert slot.itemText(slot.count() - 1) == f"{9 - duration}-я пара · " + (
+            "20:00" if duration == 1 else "18:30"
+        )
+        slot.setCurrentIndex(slot.count() - 1)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(FormDialog, "exec", accept)
+    pane.schedule_dialog()
+    lessons = service.courses.list_lessons(course.id)
+    assert len(lessons) == 1
+    block = service.redesign.get_block(lessons[0].block_id)
+    assert block.start_slot == 9 - duration
+    assert len(block.pair_ids) == duration
+    assert service.courses.get_course(course.id).kind == kind
+    assert service.courses.get_course(course.id).duration == duration

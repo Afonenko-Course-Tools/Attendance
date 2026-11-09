@@ -1,10 +1,10 @@
 """Course programme and recurrence use cases, independent of Qt and SQL."""
 
+from dataclasses import replace
 from datetime import timedelta
 
 from attendance_lab.domain.course_workflow import SemesterCourse
 from attendance_lab.domain.models import AttendanceError
-from attendance_lab.domain.redesign import TeachingRoster
 from attendance_lab.domain.rules import required_text
 
 
@@ -143,50 +143,120 @@ class CourseWorkflow:
             self.add_roster(c.id, roster.id)
             return roster
 
+    def assign_groups(self, course_id, roster_id, group_ids):
+        """Explicitly assign annual groups to this teaching line without rewriting history.
+
+        Legacy lines may have been imported as empty student-mode rosters. This
+        command intentionally changes their membership mode, preserving their
+        identity, scheduled occurrences and all frozen lesson membership/evidence.
+        """
+        course = self.get_course(course_id)
+        roster = next((r for r in self.list_rosters(course_id) if r.id == roster_id), None)
+        if roster is None:
+            raise AttendanceError("Учебная линия не принадлежит выбранному курсу.")
+        groups = {g.id: g for g in self.api.list_groups(course.academic_year_id)}
+        group_ids = set(group_ids)
+        if (
+            not group_ids
+            or not group_ids <= groups.keys()
+            or any(groups[key].course != course.study_course for key in group_ids)
+        ):
+            raise AttendanceError("Выберите годовые группы выбранного года и курса обучения.")
+        if (
+            roster.discipline_id,
+            roster.academic_year_id,
+            roster.semester,
+            roster.kind,
+            roster.duration,
+        ) != (
+            course.discipline_id,
+            course.academic_year_id,
+            course.semester,
+            course.kind,
+            course.duration,
+        ):
+            raise AttendanceError("Параметры учебной линии не соответствуют курсу.")
+        with self.store.transaction():
+            enrolled = self.api.get_discipline_groups(course.discipline_id, course.academic_year_id)
+            self.api.set_discipline_groups(
+                course.discipline_id, course.academic_year_id, enrolled | group_ids
+            )
+            return self.store.rd_save_roster(
+                replace(roster, mode="groups", group_ids=tuple(sorted(group_ids)), student_ids=())
+            )
+
     def lecture_roster(self, course_id):
-        """Use a single expected stream for new lectures, preserving dated history."""
+        """Reuse/create the whole selected annual cohort for new lectures, on demand."""
         course = self.get_course(course_id)
         if course.kind != "lecture":
             raise AttendanceError("Общий поток используется только для лекций.")
-        rosters = self.list_rosters(course_id)
-        if not rosters:
-            raise AttendanceError("Сначала добавьте учебные группы в состав потока.")
-        whole_groups = all(roster.mode == "groups" for roster in rosters)
-        groups = {group for roster in rosters for group in roster.group_ids}
-        students = {student.student_id for student in self.list_students(course_id)}
-        for roster in rosters:
-            if whole_groups:
-                matches = roster.mode == "groups" and set(roster.group_ids) == groups
-            else:
-                matches = (
-                    roster.mode == "students"
-                    and {s.student_id for s in self.api._roster_contexts(roster)} == students
-                )
-            if matches:
+        groups = {
+            g.id
+            for g in self.api.list_groups(course.academic_year_id)
+            if g.course == course.study_course
+        }
+        if not groups:
+            raise AttendanceError(
+                "Сначала загрузите учебные группы выбранного года и курса обучения."
+            )
+        for roster in self.list_rosters(course_id):
+            if roster.mode == "groups" and set(roster.group_ids) == groups:
                 return roster
         with self.store.transaction():
-            roster = self.store.rd_save_roster(
-                TeachingRoster(
-                    0,
-                    course.discipline_id,
-                    course.academic_year_id,
-                    course.semester,
-                    "Поток",
-                    course.kind,
-                    course.duration,
-                    "groups" if whole_groups else "students",
-                    tuple(sorted(groups)) if whole_groups else (),
-                    () if whole_groups else tuple(sorted(students)),
-                )
+            enrolled = self.api.get_discipline_groups(course.discipline_id, course.academic_year_id)
+            self.api.set_discipline_groups(
+                course.discipline_id, course.academic_year_id, enrolled | groups
+            )
+            roster = self.api.save_roster(
+                course.discipline_id,
+                course.academic_year_id,
+                course.semester,
+                "Общий поток",
+                course.kind,
+                course.duration,
+                "groups",
+                groups,
+                set(),
             )
             self.add_roster(course_id, roster.id)
             return roster
 
     def list_students(self, course_id):
+        course = self.get_course(course_id)
+        if course.kind == "lecture":
+            return sorted(
+                (
+                    replace(student, subgroup="")
+                    for student in self.api.list_student_contexts(course.academic_year_id)
+                    if student.course == course.study_course
+                    and student.academic_year_id == course.academic_year_id
+                ),
+                key=lambda s: s.full_name,
+            )
         students = {}
         for roster in self.list_rosters(course_id):
             students.update((s.student_id, s) for s in self.api._roster_contexts(roster))
         return sorted(students.values(), key=lambda s: s.full_name)
+
+    def list_observed_students(self, course_id):
+        """Identified actual attendees, for display without inventing enrollment.
+
+        Includes active card and manual evidence only in this course's live
+        occurrences. A late binding or correction changes this projection without
+        replaying scans. Missing annual context leaves identity visible with empty
+        group fields, rather than guessing membership from another academic year.
+        """
+        with self.store.transaction(write=False):
+            course = self.get_course(course_id)
+            observed = {student_id for student_id, _ in self.attendance_projection(course_id)}
+            return sorted(
+                (
+                    student
+                    for student in self.api.list_student_contexts(course.academic_year_id)
+                    if student.student_id in observed
+                ),
+                key=lambda student: student.full_name,
+            )
 
     def list_lessons(self, course_id):
         self.get_course(course_id)

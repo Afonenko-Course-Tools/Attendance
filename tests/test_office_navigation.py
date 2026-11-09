@@ -85,7 +85,7 @@ def test_primary_navigation_keeps_grades_visible_and_technical_windows_separate(
         app.processEvents()
 
 
-def test_lecture_stream_uses_expected_members_only_and_keeps_historical_rosters(course):  # noqa: F811
+def test_lecture_stream_uses_selected_annual_cohort_and_keeps_historical_rosters(course):  # noqa: F811
     service, initial, _ = course
     group = service.redesign.list_groups()[0]
     lecture = service.courses.save_course(
@@ -124,14 +124,22 @@ def test_lecture_stream_uses_expected_members_only_and_keeps_historical_rosters(
     service.redesign.apply_import(
         service.redesign.preview_import(
             headers,
-            [["3", "Вымышленный Третий", "Тест", "Профиль", "2", "1", "0003"]],
+            [
+                ["3", "Вымышленный Третий", "Тест", "Профиль", "2", "1", "0003"],
+                ["4", "Вымышленный Иной", "Тест", "Профиль", "3", "1", "0004"],
+            ],
             2026,
         )
+    )
+    added = next(
+        s.student_id
+        for s in service.redesign.list_student_contexts()
+        if s.record_book_number == "0003"
     )
     outsider = next(
         s.student_id
         for s in service.redesign.list_student_contexts()
-        if s.student_id not in students
+        if s.record_book_number == "0004"
     )
     first_pair = service.redesign.get_block(occurrences[0].block_id).pair_ids[0]
     service.redesign.create_manual_batch(
@@ -149,8 +157,9 @@ def test_lecture_stream_uses_expected_members_only_and_keeps_historical_rosters(
         for lesson in occurrences
     }
     stream = service.courses.lecture_roster(lecture.id)
-    assert set(stream.student_ids) == set(students)
-    assert outsider not in stream.student_ids
+    assert stream.mode == "groups" and set(stream.group_ids) == {group.id}
+    assert {s.student_id for s in service.courses.list_students(lecture.id)} == {*students, added}
+    assert outsider not in {s.student_id for s in service.redesign._roster_contexts(stream)}
     assert service.courses.lecture_roster(lecture.id).id == stream.id
     assert len(service.courses.list_rosters(lecture.id)) == 3
     for block_id, (block, contexts) in historical.items():
@@ -166,7 +175,7 @@ def test_lecture_stream_uses_expected_members_only_and_keeps_historical_rosters(
     expected = service.redesign.get_pair_contexts(
         service.redesign.get_block(new.block_id).pair_ids[0]
     )
-    assert {s.student_id for s in expected} == set(students)
+    assert {s.student_id for s in expected} == {*students, added}
 
 
 def test_grading_keyboard_and_actions_follow_visible_selection(course, tmp_path, monkeypatch):  # noqa: F811

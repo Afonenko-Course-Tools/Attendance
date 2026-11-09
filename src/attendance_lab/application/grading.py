@@ -197,9 +197,18 @@ class GradingService:
     def templates(self, course_id=None):
         return self.store.gr_templates(self.works(course_id) if course_id is not None else None)
 
-    def export_projection(self, course_id):
-        """One flat projection: actual evidence dates, original scales and active calculation."""
-        students = self.students(course_id)
+    def export_projection(self, course_id, *, observed_only=False):
+        """Flat journal for enrollment, or explicitly selected observed attendance rows.
+
+        Observed rows are a display population, not an enrollment operation. Their
+        actual attendance remains exportable without assigning compulsory works or
+        inventing grades for students outside the course's expected membership.
+        """
+        students = (
+            self.service.courses.list_observed_students(course_id)
+            if observed_only
+            else self.students(course_id)
+        )
         works = self.works(course_id)
         scores = self.store.gr_scores(course_id)
         cards = {r.student_id: r for r in self.store.gr_reports(course_id)}
@@ -223,7 +232,7 @@ class GradingService:
         headers += ["Итог /10", "Полнота", "Версия расчёта"]
         rows = []
         for student in students:
-            result = results[student.student_id]
+            result = results.get(student.student_id)
             card = cards.get(student.student_id)
             row = [
                 student.full_name,
@@ -251,15 +260,19 @@ class GradingService:
                 card.topic if card else "",
                 lessons.get(card.lesson_id, "") if card else "",
                 ("Да" if card.written else "Нет") if card else "",
-                result.report,
+                result.report if result is not None else None,
             ]
             row += [scores.get((student.student_id, w.id)) for w in works]
             row += [
-                result.mark,
-                "Не хватает: " + ", ".join(result.missing)
-                if result.missing
-                else ("Полный" if result.final is not None else "Оценивание не включено"),
-                result.parameter_version,
+                result.mark if result is not None else None,
+                "Состав не назначен"
+                if result is None
+                else (
+                    "Не хватает: " + ", ".join(result.missing)
+                    if result.missing
+                    else ("Полный" if result.final is not None else "Оценивание не включено")
+                ),
+                result.parameter_version if result is not None else None,
             ]
             rows.append(row)
         return headers, rows

@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):
         self.course_workspace = CourseWorkspace(
             service, self.refresh, self.workspace, self.preparation, self, files=files
         )
+        self.course_workspace.evidence_changed = self.refresh_evidence
         course_layout = self.course_workspace.layout()
         assert isinstance(course_layout, QVBoxLayout)
         course_layout.removeWidget(self.course_workspace.courses)

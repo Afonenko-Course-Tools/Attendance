@@ -15,7 +15,7 @@ class Commands:
         definitions = [
             ("Команды", "F1", self.show),
             ("Отложить карту / выйти из ручного поиска", "Escape", window.workspace.defer),
-            ("Ручная отметка выбранного занятия", "F2", window.workspace.start_manual),
+            ("Ручная отметка выбранного студента", "F2", window.workspace.manual_current),
             ("Поиск на экране", "F3", self.search),
             ("Исправить последнюю карту", "F4", window.workspace.correct_last_card),
             ("Следующая область", "F6", lambda: self.focus_region(1)),
@@ -88,6 +88,7 @@ class Commands:
         regions = [self.window.course_workspace.courses, self.window.tabs.tabBar()]
         if current is self.window.workspace:
             regions += [
+                current.roster_filter,
                 current.blocks,
                 current.table,
                 current.course,

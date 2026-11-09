@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from attendance_lab.application.course_absences import expected_student_ids
 from attendance_lab.presentation.attendance_models import (
     IDENTITY,
     StudentModel,
@@ -38,6 +39,7 @@ from attendance_lab.presentation.common import (
     plain_label,
     private_message,
 )
+from attendance_lab.presentation.lesson_filtering import LessonSelector, roster_caption
 from attendance_lab.presentation.preparation import FormDialog
 from attendance_lab.presentation.sorting import sort_dialog
 from attendance_lab.presentation.toolbars import office_toolbar
@@ -72,8 +74,21 @@ class LessonWorkspace(QWidget):
         self.saved_query = ""
         self.evidence_changed: Callable[..., None] = lambda *_: None
         layout = QVBoxLayout(self)
+        self._roster_filter_choices = {}
+        self._roster_filter_course = None
+        self.roster_filter_row = QWidget()
+        roster_filter_layout = QHBoxLayout(self.roster_filter_row)
+        roster_filter_layout.setContentsMargins(0, 0, 0, 0)
+        roster_filter_layout.addWidget(plain_label("Подгруппа"))
+        self.roster_filter = LessonSelector()
+        self.roster_filter.setToolTip(
+            "Выберите сохранённую подгруппу, чтобы сократить список занятий"
+        )
+        roster_filter_layout.addWidget(self.roster_filter, 1)
+        self.roster_filter_row.hide()
+        layout.addWidget(self.roster_filter_row)
         bar = QHBoxLayout()
-        self.blocks = QComboBox()
+        self.blocks = LessonSelector()
         self.today = QCheckBox("Только сегодня")
         self.today.setChecked(True)
         bar.addWidget(plain_label("Занятие"))
@@ -95,11 +110,11 @@ class LessonWorkspace(QWidget):
         self.expand_button.clicked.connect(self.expand)
         self.expand_button.hide()
         self.manual_button = QPushButton("Ручная отметка")
-        self.manual_button.setToolTip("Найти студента и отметить посещение выбранного занятия · F2")
+        self.manual_button.setToolTip("Отметить посещение выбранного студента · F2")
         self.manual_button.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
         )
-        self.manual_button.clicked.connect(self.start_manual)
+        self.manual_button.clicked.connect(self.manual_current)
         registration_actions.addWidget(self.manual_button)
         self.correct_button = QPushButton("Исправить карту")
         self.correct_button.setEnabled(False)
@@ -218,6 +233,7 @@ class LessonWorkspace(QWidget):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter, 1)
+        self.roster_filter.currentIndexChanged.connect(self.filter_roster)
         self.blocks.currentIndexChanged.connect(self.show_block)
         self.today.toggled.connect(self.refresh)
         self.search.textChanged.connect(self.find)
@@ -228,6 +244,8 @@ class LessonWorkspace(QWidget):
         self.matches.itemActivated.connect(lambda *_: self.confirm_match())
         self.table.selectionModel().selectionChanged.connect(self.update_action_state)
         self.matches.currentItemChanged.connect(self.update_action_state)
+        self.matches.currentItemChanged.connect(self.select_search_student)
+        self.matches.itemClicked.connect(self.select_search_student)
         self.model.modelReset.connect(self.update_action_state)
         self.update_matching_visibility()
         self.update_action_state()
@@ -352,10 +370,12 @@ class LessonWorkspace(QWidget):
             or self.controller.active_session_id is not None
         )
         manual_enabled = self.manual_allowed(pairs)
-        self.manual_button.setEnabled(manual_enabled)
+        self.manual_button.setEnabled(manual_enabled and bool(self.manual_target_ids()))
         self.manual_selected_button.setEnabled(manual_enabled and bool(selected))
         self.manual_button.setToolTip(
-            "Найти студента и отметить посещение выбранного занятия · F2"
+            "Отметить посещение выбранного студента · F2"
+            if self.manual_button.isEnabled()
+            else "Сначала выберите студента в таблице или результатах поиска"
             if manual_enabled
             else "Для будущего занятия сначала откройте регистрацию"
             if pairs
@@ -393,9 +413,41 @@ class LessonWorkspace(QWidget):
             else "Закрыть поиск · Esc"
         )
 
+    def filter_roster(self, *_):
+        if self._roster_filter_course is not None:
+            self._roster_filter_choices[self._roster_filter_course] = (
+                self.roster_filter.currentData()
+            )
+        self.refresh()
+
+    def refresh_roster_filter(self):
+        course_id = self.selected_course_id
+        visible = course_id is not None and not self.is_lecture()
+        self.roster_filter_row.setVisible(visible)
+        selected = self._roster_filter_choices.get(course_id)
+        self.roster_filter.blockSignals(True)
+        self.roster_filter.clear()
+        self.roster_filter.addItem("Все подгруппы", None)
+        if visible:
+            course = self.service.courses.get_course(course_id)
+            groups = self.api.list_groups(course.academic_year_id)
+            rosters = self.service.courses.list_rosters(course_id)
+            for roster in sorted(rosters, key=lambda value: (value.name.casefold(), value.id)):
+                caption = roster_caption(roster, groups)
+                self.roster_filter.addItem(caption, roster.id)
+                self.roster_filter.setItemData(
+                    self.roster_filter.count() - 1, caption, Qt.ItemDataRole.ToolTipRole
+                )
+        index = self.roster_filter.findData(selected)
+        self.roster_filter.setCurrentIndex(max(0, index))
+        self._roster_filter_course = course_id
+        self.roster_filter.blockSignals(False)
+        return self.roster_filter.currentData() if visible else None
+
     def refresh(self, *_):
         self.cache = StudentSearch(self.api.list_student_contexts())
         selected = self.blocks.currentData()
+        roster_filter = self.refresh_roster_filter()
         self.blocks.blockSignals(True)
         self.blocks.clear()
         blocks = self.api.list_blocks()
@@ -405,9 +457,12 @@ class LessonWorkspace(QWidget):
                 for lesson in self.service.courses.list_lessons(self.selected_course_id)
             }
             blocks = [b for b in blocks if b.id in allowed]
+        if roster_filter is not None:
+            blocks = [block for block in blocks if block.roster_id == roster_filter]
         paired = {pair for block in blocks for pair in block.pair_ids}
         disciplines = {d.id: d.name for d in self.service.list_disciplines()}
         rosters = {r.id: r for r in self.api.list_rosters()}
+        groups = self.api.list_groups()
         lessons = self.service.list_lessons()
         by_id = {p.id: p for p in lessons}
         entries = []
@@ -421,7 +476,10 @@ class LessonWorkspace(QWidget):
             first, last = by_id[block.pair_ids[0]], by_id[block.pair_ids[-1]]
             zone = ZoneInfo(block.timezone)
             title = self.block_title(block)
-            label = f"{block.date:%d.%m.%Y} · {first.starts_at.astimezone(zone):%H:%M}–{last.ends_at.astimezone(zone):%H:%M} · {title}"
+            label = f"{block.date:%d.%m.%Y} · {first.starts_at.astimezone(zone):%H:%M}–{last.ends_at.astimezone(zone):%H:%M}"
+            if self.selected_course_id is not None and not self.is_lecture():
+                label += f" · {roster_caption(roster, groups)}"
+            label += f" · {title}"
             if self.selected_course_id is None:
                 label += f" · {disciplines[roster.discipline_id]}"
             entries.append((first.starts_at, label, block.id))
@@ -445,10 +503,14 @@ class LessonWorkspace(QWidget):
             )
         for _, label, key in sorted(entries, key=lambda item: item[0]):
             self.blocks.addItem(label, key)
+            self.blocks.setItemData(self.blocks.count() - 1, label, Qt.ItemDataRole.ToolTipRole)
         index = self.blocks.findData(selected)
         self.blocks.setCurrentIndex(max(0, index))
         self.blocks.blockSignals(False)
-        self.show_block()
+        if self.blocks.currentData() != selected:
+            self.blocks.currentIndexChanged.emit(self.blocks.currentIndex())
+        else:
+            self.show_block()
         self.find()
 
     def show_block(self, *_):
@@ -469,10 +531,19 @@ class LessonWorkspace(QWidget):
                     )
                 )
             pair_ids = block.pair_ids
-            for pair in block.pair_ids:
-                contexts = self.api.get_pair_contexts(pair)
-                self.expected_by_pair[pair] = {s.student_id for s in contexts}
-                students.update((s.student_id, s) for s in contexts)
+            if self.selected_course_id is not None:
+                expected = expected_student_ids(self.service, self.selected_course_id, block.id)
+                students.update(
+                    (context.student_id, context)
+                    for context in self.cache.students
+                    if context.student_id in expected
+                )
+                self.expected_by_pair = {pair: set(expected) for pair in block.pair_ids}
+            else:
+                for pair in block.pair_ids:
+                    contexts = self.api.get_pair_contexts(pair)
+                    self.expected_by_pair[pair] = {s.student_id for s in contexts}
+                    students.update((s.student_id, s) for s in contexts)
             first = self.service.get_lesson(block.pair_ids[0])
             last = self.service.get_lesson(block.pair_ids[-1])
             zone = ZoneInfo(block.timezone)
@@ -556,9 +627,17 @@ class LessonWorkspace(QWidget):
     def select_lesson(self, lesson_id):
         block = next((b for b in self.api.list_blocks() if lesson_id in b.pair_ids), None)
         key = block.id if block else f"lesson:{lesson_id}"
+        if block and self.roster_filter.currentData() not in (None, block.roster_id):
+            index = self.roster_filter.findData(block.roster_id)
+            self.roster_filter.setCurrentIndex(max(0, index))
         if self.blocks.findData(key) < 0 and self.today.isChecked():
             self.today.setChecked(False)
-        self.blocks.setCurrentIndex(self.blocks.findData(key))
+        index = self.blocks.findData(key)
+        if index >= 0:
+            unchanged = self.blocks.currentIndex() == index
+            self.blocks.setCurrentIndex(index)
+            if unchanged:
+                self.blocks.currentIndexChanged.emit(index)
 
     def update_counts(self):
         self.expand_button.setEnabled(self.controller.active_session_id is not None)
@@ -956,8 +1035,24 @@ class LessonWorkspace(QWidget):
         )
         self.update_last_card()
 
-    def manual_block(self):
-        ids = self.selected_ids()
+    def manual_target_ids(self):
+        selected = self.selected_ids()
+        if selected:
+            return selected
+        item = self.matches.currentItem()
+        if self.search_expanded and not self.pinned_uid and not self.manual_mode and item:
+            return {item.data(IDENTITY)}
+        return set()
+
+    def select_search_student(self, item, *_):
+        if self.search_expanded and not self.pinned_uid and not self.manual_mode and item:
+            self.table.clearSelection()
+
+    def manual_current(self):
+        self.manual_block(student_ids=self.manual_target_ids())
+
+    def manual_block(self, *, student_ids=None):
+        ids = self.selected_ids() if student_ids is None else set(student_ids)
         pairs = self.viewed_pair_ids()
         if not ids or not pairs:
             return
@@ -966,7 +1061,7 @@ class LessonWorkspace(QWidget):
             self.update_action_state()
             return
         targets = {(student, pair) for student in ids for pair in pairs}
-        names = "\n".join(s.full_name for s in self.model.students if s.student_id in ids)
+        names = "\n".join(s.full_name for s in self.cache.students if s.student_id in ids)
         reason, ok = QInputDialog.getText(
             self,
             "Ручная отметка выбранных",

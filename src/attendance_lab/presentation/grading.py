@@ -893,12 +893,14 @@ class GradingPane(QWidget):
         if ok:
             self._set_candidate(templates[name])
 
-    def export(self):
+    def export(self, *, observed_only=False):
         filename, _ = QFileDialog.getSaveFileName(
             self, "Экспорт журнала", "journal.xlsx", "Excel (*.xlsx)"
         )
         if filename:
-            headers, rows = self.workflow.export_projection(self.course_id)
+            headers, rows = self.workflow.export_projection(
+                self.course_id, observed_only=observed_only
+            )
             if self.files is None:
                 raise AttendanceError("Экспорт недоступен: файловый адаптер не подключён.")
             self.files.export_xlsx(Path(filename), headers, rows)

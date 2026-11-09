@@ -127,19 +127,6 @@ class PreparationPane(QWidget):
         self.schedule_window.setMinimumSize(900, 600)
         source_layout = QVBoxLayout(self.schedule_window)
         source_layout.addWidget(schedule)
-        source = QWidget()
-        source_box = QVBoxLayout(source)
-        source_box.addWidget(
-            plain_label(
-                "Исходное расписание доступно в отдельном окне. Здесь можно удалить фиктивное занятие или восстановить ранее удалённое.",
-                wrap=True,
-            )
-        )
-        self.source_schedule_button = QPushButton("Исходные занятия…")
-        self.source_schedule_button.clicked.connect(self.schedule_window.show)
-        source_box.addWidget(self.source_schedule_button)
-        source_box.addStretch()
-        self.tabs.addTab(source, "Исходное расписание")
         self.tabs.addTab(students, "Учебный список")
         layout.addWidget(self.tabs)
 

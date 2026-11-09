@@ -354,7 +354,7 @@ def test_student_selected_by_name_can_unbind_cards_without_uid(window, confirmed
     pane.refresh()
     window.tabs.setCurrentWidget(window.course_workspace)
     window.course_workspace.tabs.setCurrentWidget(window.preparation)
-    window.preparation.tabs.setCurrentIndex(1)
+    window.preparation.tabs.setCurrentWidget(window.students)
     pane.search.setFocus()
     QApplication.processEvents()
     pane.search.setText("семенов")
