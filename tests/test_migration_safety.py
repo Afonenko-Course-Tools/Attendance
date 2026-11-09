@@ -378,3 +378,147 @@ def test_additional_lesson_rejects_unconfirmed_date_collision_and_bad_context(tm
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
         assert connection.execute("SELECT count(*) FROM lessons").fetchone()[0] == 2
+
+
+def _line_plan(tmp_path):
+    database = tmp_path / "source.sqlite3"
+    create_v1_database(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM lesson_roster")
+        connection.executemany(
+            "INSERT INTO lessons VALUES(?,17,?,?,'Europe/Minsk','','','completed',1)",
+            [
+                (43, "2026-09-08T06:00:00+00:00", "2026-09-08T07:20:00+00:00"),
+                (44, "2026-09-09T06:00:00+00:00", "2026-09-09T07:20:00+00:00"),
+            ],
+        )
+    report = rehearse(database, tmp_path / "review")
+    path = _approve(report, tmp_path / "approved.json", duration=1)
+    approved = json.loads(path.read_text())
+    approved["courses"][0]["programme_length"] = 8
+    approved["teaching_lines"] = [
+        {
+            "key": "line-tue",
+            "course_key": "course-17",
+            "name": "Вторник, вечер",
+            "weekday": 2,
+            "start_slot": 6,
+        },
+        {
+            "key": "line-wed",
+            "course_key": "course-17",
+            "name": "Среда, день",
+            "weekday": 3,
+            "start_slot": 4,
+        },
+    ]
+    settings = {
+        41: ("line-tue", 1, "2026-09-08", 6, False),
+        42: ("line-wed", 1, "2026-09-09", 4, False),
+        43: ("line-tue", 2, "2026-09-15", 6, False),
+        44: ("line-wed", 2, "2026-09-11", 1, True),
+    }
+    for row in approved["legacy_plan"]:
+        line, number, day, slot, makeup = settings[row["lesson_id"]]
+        row.update(
+            line_key=line,
+            topic_number=number,
+            topic_title=f"Общая тема {number}",
+            local_day=day,
+            start_slot=slot,
+            makeup=makeup,
+        )
+    path.write_text(json.dumps(approved))
+    return database, path
+
+
+def test_shared_line_roster_common_programme_and_actual_makeup_slot(tmp_path):
+    from attendance_lab.infrastructure.migration_plan import apply_approved
+
+    database, path = _line_plan(tmp_path)
+    before = logical_rows(database, ("scans", "cards", "binding_changes", "lesson_roster"))
+    apply_approved(database, path, tmp_path / "applied")
+    assert logical_rows(database, tuple(before)) == before
+    candidate = tmp_path / "applied/candidate.sqlite3"
+    assert logical_rows(candidate, tuple(before)) == before
+    with sqlite3.connect(candidate) as connection:
+        assert connection.execute(
+            "SELECT number FROM course_topics ORDER BY number"
+        ).fetchall() == [(n,) for n in range(1, 9)]
+        assert connection.execute("SELECT count(*) FROM course_lessons").fetchone()[0] == 4
+        assert connection.execute("SELECT count(*) FROM lessons").fetchone()[0] == 4
+        assert connection.execute("SELECT count(*) FROM teaching_rosters").fetchone()[0] == 2
+        assert connection.execute("SELECT count(*) FROM roster_students").fetchone()[0] == 0
+        topic = connection.execute("SELECT id FROM course_topics WHERE number=1").fetchone()[0]
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM course_lessons WHERE topic_id=?", (topic,)
+            ).fetchone()[0]
+            == 2
+        )
+        roster_by_pair = dict(
+            connection.execute(
+                "SELECT bl.lesson_id,sb.roster_id FROM block_lessons bl JOIN scheduled_blocks sb ON sb.id=bl.block_id"
+            )
+        )
+        assert roster_by_pair[41] == roster_by_pair[43]
+        assert roster_by_pair[42] == roster_by_pair[44]
+        assert roster_by_pair[41] != roster_by_pair[42]
+        assert connection.execute(
+            "SELECT day,start_slot FROM scheduled_blocks WHERE id=(SELECT block_id FROM block_lessons WHERE lesson_id=44)"
+        ).fetchone() == ("2026-09-11", 1)
+        assert (
+            connection.execute(
+                "SELECT name FROM teaching_rosters WHERE id=?", (roster_by_pair[44],)
+            ).fetchone()[0]
+            == "Среда, день"
+        )
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.parametrize(
+    "change", [{"makeup": False}, {"line_key": "unknown"}, {"topic_number": 9}]
+)
+def test_line_plan_rejects_unconfirmed_makeup_wrong_line_and_topic_outside_programme(
+    tmp_path, change
+):
+    from attendance_lab.infrastructure.migration_plan import apply_approved
+
+    database, path = _line_plan(tmp_path)
+    approved = json.loads(path.read_text())
+    next(r for r in approved["legacy_plan"] if r["lesson_id"] == 44).update(change)
+    path.write_text(json.dumps(approved))
+    with pytest.raises(AttendanceError):
+        apply_approved(database, path, tmp_path / "rejected")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("same_line", [False, True])
+def test_additional_collision_is_scoped_to_logical_line(tmp_path, same_line):
+    from attendance_lab.infrastructure.migration_plan import apply_approved
+
+    database, path = _line_plan(tmp_path)
+    approved = json.loads(path.read_text())
+    approved["additional_lessons"] = [
+        dict(
+            _addition(
+                source=41 if same_line else 42, day="2026-09-08", number=3, title="Общая тема 3"
+            ),
+            line_key="line-tue" if same_line else "line-wed",
+            makeup=True,
+            start_slot=6,
+        )
+    ]
+    path.write_text(json.dumps(approved))
+    if same_line:
+        with pytest.raises(AttendanceError):
+            apply_approved(database, path, tmp_path / "result")
+    else:
+        result = apply_approved(database, path, tmp_path / "result")
+        assert result["additional_lessons"] == 1
+        with sqlite3.connect(tmp_path / "result/candidate.sqlite3") as connection:
+            assert connection.execute("SELECT count(*) FROM course_topics").fetchone()[0] == 8
+            assert connection.execute("SELECT count(*) FROM teaching_rosters").fetchone()[0] == 2
+            assert connection.execute("SELECT count(*) FROM course_lessons").fetchone()[0] == 5
+            assert connection.execute("SELECT count(*) FROM scans").fetchone()[0] == 1
