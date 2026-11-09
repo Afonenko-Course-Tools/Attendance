@@ -1,6 +1,7 @@
 """Synthetic reversible lesson removal preserves original attendance and identities."""
 
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 import test_course_workflow as course_tests
@@ -56,7 +57,9 @@ def test_whole_block_delete_restore_preserves_facts_and_projection(course):
 
 def test_active_registration_rejects_whole_block_atomically(course):
     service, semester_course, roster = course
-    occurrence = service.courses.schedule(semester_course.id, roster.id, 1, date.today(), 1)
+    occurrence = service.courses.schedule(
+        semester_course.id, roster.id, 1, datetime.now(ZoneInfo("Europe/Minsk")).date(), 1
+    )
     block = service.redesign.get_block(occurrence.block_id)
     service.redesign.open_session(block.id, {block.pair_ids[0]})
     with pytest.raises(AttendanceError, match="регистрац"):
@@ -121,7 +124,9 @@ def test_legacy_schedule_deletes_exact_selected_id_after_sort(course, tmp_path, 
 
 def test_source_schedule_projection_excludes_course_bound_pairs(course):
     service, semester_course, roster = course
-    service.courses.schedule(semester_course.id, roster.id, 1, date.today(), 1)
+    service.courses.schedule(
+        semester_course.id, roster.id, 1, datetime.now(ZoneInfo("Europe/Minsk")).date(), 1
+    )
     start = datetime(2026, 9, 7, 20, 49, tzinfo=UTC)
     source = service.save_lesson(
         semester_course.discipline_id,

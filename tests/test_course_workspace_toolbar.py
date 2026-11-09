@@ -1,6 +1,7 @@
 """Synthetic Qt coverage for usable course controls and meaningful absence filters."""
 
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from PySide6.QtCore import Qt
@@ -82,9 +83,17 @@ def test_toolbar_selection_enables_real_targets_and_series_only(workspace):
     assert not pane.tools["edit_topic"].isEnabled()
     pane.topics.selectRow(0)
     assert pane.tools["edit_topic"].isEnabled()
-    one = service.courses.schedule(course.id, first.id, 1, date.today(), 1)
+    one = service.courses.schedule(
+        course.id, first.id, 1, datetime.now(ZoneInfo("Europe/Minsk")).date(), 1
+    )
     series = service.courses.schedule_series(
-        course.id, first.id, date.today() + timedelta(days=7), 1, 7, 2, 2
+        course.id,
+        first.id,
+        datetime.now(ZoneInfo("Europe/Minsk")).date() + timedelta(days=7),
+        1,
+        7,
+        2,
+        2,
     )
     pane.show_course()
     pane.lessons.selectRow(0)
@@ -108,9 +117,15 @@ def test_toolbar_selection_enables_real_targets_and_series_only(workspace):
 
 def test_absences_ignore_future_and_other_subgroups_and_refresh_after_mark(workspace):
     pane, service, course, students, first, second = workspace
-    past = date.today() - timedelta(days=7)
+    past = datetime.now(ZoneInfo("Europe/Minsk")).date() - timedelta(days=7)
     lesson = service.courses.schedule(course.id, first.id, 1, past, 1)
-    service.courses.schedule(course.id, second.id, 2, date.today() + timedelta(days=7), 1)
+    service.courses.schedule(
+        course.id,
+        second.id,
+        2,
+        datetime.now(ZoneInfo("Europe/Minsk")).date() + timedelta(days=7),
+        1,
+    )
     pane.show_course()
     assert pane.missed_topics[students[0].student_id] == {lesson.topic_id}
     assert pane.missed_topics[students[1].student_id] == set()
@@ -146,7 +161,11 @@ def test_lecture_has_one_stream_no_subgroup_ui_and_cancel_does_not_write(workspa
     roster = service.courses.add_groups(lecture.id, groups)
     service.courses.save_topic(lecture.id, 1, "Общая тема")
     occurrence = service.courses.schedule(
-        lecture.id, roster.id, 1, date.today() - timedelta(days=7), 1
+        lecture.id,
+        roster.id,
+        1,
+        datetime.now(ZoneInfo("Europe/Minsk")).date() - timedelta(days=7),
+        1,
     )
     pane.refresh()
     pane.courses.setCurrentIndex(pane.courses.findData(lecture.id))
@@ -177,7 +196,7 @@ def test_unknown_subgroup_snapshot_is_explained_and_not_counted(workspace):
 
     pane, service, course, students, first, _ = workspace
     occurrence = service.courses.schedule(
-        course.id, first.id, 1, date.today() - timedelta(days=7), 1
+        course.id, first.id, 1, datetime.now(ZoneInfo("Europe/Minsk")).date() - timedelta(days=7), 1
     )
     block = service.redesign.get_block(occurrence.block_id)
     with service.repository.transaction():
@@ -221,7 +240,9 @@ def test_new_and_copied_course_become_the_selected_course(workspace, monkeypatch
 
 def test_filtering_selected_student_disables_mark_without_losing_identity(workspace, monkeypatch):
     pane, service, course, students, first, _ = workspace
-    service.courses.schedule(course.id, first.id, 1, date.today() - timedelta(days=7), 1)
+    service.courses.schedule(
+        course.id, first.id, 1, datetime.now(ZoneInfo("Europe/Minsk")).date() - timedelta(days=7), 1
+    )
     pane.show_course()
     row = next(
         row
@@ -254,7 +275,11 @@ def test_fixed_lecture_snapshot_does_not_add_absence_for_later_joiner(workspace)
     roster = service.courses.add_groups(lecture.id, {groups[0].id})
     service.courses.save_topic(lecture.id, 1, "Проведённая лекция")
     occurrence = service.courses.schedule(
-        lecture.id, roster.id, 1, date.today() - timedelta(days=7), 1
+        lecture.id,
+        roster.id,
+        1,
+        datetime.now(ZoneInfo("Europe/Minsk")).date() - timedelta(days=7),
+        1,
     )
     registration = service.courses.open_registration(occurrence.id)
     service.redesign.close_session(registration.id)
@@ -282,7 +307,11 @@ def test_fixed_empty_lecture_snapshot_is_unknown_instead_of_whole_stream(workspa
     roster = service.courses.add_groups(lecture.id, {g.id for g in service.redesign.list_groups()})
     service.courses.save_topic(lecture.id, 1, "Лекция без снимка состава")
     occurrence = service.courses.schedule(
-        lecture.id, roster.id, 1, date.today() - timedelta(days=7), 1
+        lecture.id,
+        roster.id,
+        1,
+        datetime.now(ZoneInfo("Europe/Minsk")).date() - timedelta(days=7),
+        1,
     )
     block = service.redesign.get_block(occurrence.block_id)
     with service.repository.transaction():

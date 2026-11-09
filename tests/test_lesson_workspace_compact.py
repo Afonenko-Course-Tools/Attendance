@@ -1,6 +1,7 @@
 """Compact lesson controls retain stable targets and historical lecture rosters."""
 
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from PySide6.QtCore import Qt
@@ -35,7 +36,7 @@ def lecture(tmp_path):
                 ["1", "Вымышленный Алексей", "Тест", "Профиль", "2", "1", "0001"],
                 ["2", "Вымышленный Борис", "Тест", "Профиль", "2", "1", "0002"],
             ],
-            date.today().year,
+            datetime.now(ZoneInfo("Europe/Minsk")).date().year,
         )
     )
     discipline = service.save_discipline("Учебные лекции")
@@ -65,7 +66,11 @@ def lecture(tmp_path):
         rosters.append(roster)
     service.courses.save_topic(course.id, 1, "Введение в предмет")
     occurrence = service.courses.schedule(
-        course.id, rosters[0].id, 1, date.today() - timedelta(days=1), 1
+        course.id,
+        rosters[0].id,
+        1,
+        datetime.now(ZoneInfo("Europe/Minsk")).date() - timedelta(days=1),
+        1,
     )
     block = service.redesign.get_block(occurrence.block_id)
     controller = AttendanceController(service, DemoReader)
@@ -188,7 +193,11 @@ def test_future_closed_manual_actions_require_registration_and_recheck_draft(lec
     widget, service, controller, course, past = lecture
     service.courses.save_topic(course.id, 2, "Будущее занятие")
     occurrence = service.courses.schedule(
-        course.id, past.roster_id, 2, date.today() + timedelta(days=1), 1
+        course.id,
+        past.roster_id,
+        2,
+        datetime.now(ZoneInfo("Europe/Minsk")).date() + timedelta(days=1),
+        1,
     )
     future = service.redesign.get_block(occurrence.block_id)
     widget.refresh()

@@ -1,6 +1,7 @@
 """Synthetic semester programme and whole-block workflow acceptance."""
 
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -115,7 +116,9 @@ def test_qt_course_navigation_identity_sort_and_written_only(course, tmp_path):
 
     app = QApplication.instance() or QApplication([])
     service, semester_course, roster = course
-    occurrence = service.courses.schedule(semester_course.id, roster.id, 1, date.today(), 1)
+    occurrence = service.courses.schedule(
+        semester_course.id, roster.id, 1, datetime.now(ZoneInfo("Europe/Minsk")).date(), 1
+    )
     window = MainWindow(
         service,
         AttendanceController(service, DemoReader),

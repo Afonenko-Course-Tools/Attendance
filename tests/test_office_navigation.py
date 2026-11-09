@@ -1,6 +1,7 @@
 """Office navigation and stream scheduling preserve fixed historical evidence."""
 
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from PySide6.QtWidgets import QAbstractItemView, QApplication
 from test_course_workflow import course  # noqa: F401
@@ -44,7 +45,9 @@ def test_cell_refresh_preserves_exact_selected_targets_without_selecting_other_t
 def test_primary_navigation_keeps_grades_visible_and_technical_windows_separate(course, tmp_path):  # noqa: F811
     app = QApplication.instance() or QApplication([])
     service, selected, roster = course
-    occurrence = service.courses.schedule(selected.id, roster.id, 1, date.today(), 1)
+    occurrence = service.courses.schedule(
+        selected.id, roster.id, 1, datetime.now(ZoneInfo("Europe/Minsk")).date(), 1
+    )
     window = MainWindow(
         service,
         AttendanceController(service, DemoReader),
@@ -100,7 +103,13 @@ def test_lecture_stream_uses_expected_members_only_and_keeps_historical_rosters(
     for number in range(1, 4):
         service.courses.save_topic(lecture.id, number, f"Тема {number}")
     occurrences = [
-        service.courses.schedule(lecture.id, r.id, n, date.today() - timedelta(days=3 - n), 1)
+        service.courses.schedule(
+            lecture.id,
+            r.id,
+            n,
+            datetime.now(ZoneInfo("Europe/Minsk")).date() - timedelta(days=3 - n),
+            1,
+        )
         for n, r in enumerate((first, second), 1)
     ]
     headers = [
@@ -147,7 +156,13 @@ def test_lecture_stream_uses_expected_members_only_and_keeps_historical_rosters(
     for block_id, (block, contexts) in historical.items():
         assert service.redesign.get_block(block_id) == block
         assert tuple(service.redesign.get_pair_contexts(block.pair_ids[0])) == contexts
-    new = service.courses.schedule(lecture.id, stream.id, 3, date.today() + timedelta(days=7), 1)
+    new = service.courses.schedule(
+        lecture.id,
+        stream.id,
+        3,
+        datetime.now(ZoneInfo("Europe/Minsk")).date() + timedelta(days=7),
+        1,
+    )
     expected = service.redesign.get_pair_contexts(
         service.redesign.get_block(new.block_id).pair_ids[0]
     )
@@ -211,8 +226,12 @@ def test_grading_keyboard_and_actions_follow_visible_selection(course, tmp_path,
 def test_viewing_lessons_and_refreshing_scores_preserves_unapplied_calculation(course, tmp_path):  # noqa: F811
     app = QApplication.instance() or QApplication([])
     service, selected, roster = course
-    first = service.courses.schedule(selected.id, roster.id, 1, date.today(), 1)
-    second = service.courses.schedule(selected.id, roster.id, 2, date.today(), 3)
+    first = service.courses.schedule(
+        selected.id, roster.id, 1, datetime.now(ZoneInfo("Europe/Minsk")).date(), 1
+    )
+    second = service.courses.schedule(
+        selected.id, roster.id, 2, datetime.now(ZoneInfo("Europe/Minsk")).date(), 3
+    )
     window = MainWindow(
         service,
         AttendanceController(service, DemoReader),
@@ -240,8 +259,12 @@ def test_viewing_lessons_and_refreshing_scores_preserves_unapplied_calculation(c
 def test_reader_events_menu_uses_viewed_lesson_with_another_registration_open(course, tmp_path):  # noqa: F811
     app = QApplication.instance() or QApplication([])
     service, selected, roster = course
-    first = service.courses.schedule(selected.id, roster.id, 1, date.today(), 1)
-    second = service.courses.schedule(selected.id, roster.id, 2, date.today(), 3)
+    first = service.courses.schedule(
+        selected.id, roster.id, 1, datetime.now(ZoneInfo("Europe/Minsk")).date(), 1
+    )
+    second = service.courses.schedule(
+        selected.id, roster.id, 2, datetime.now(ZoneInfo("Europe/Minsk")).date(), 3
+    )
     controller = AttendanceController(service, DemoReader)
     window = MainWindow(
         service,
