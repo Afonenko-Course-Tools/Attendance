@@ -66,13 +66,16 @@ class Commands:
             self.window.preparation.tabs.setCurrentWidget(self.window.students)
             widget = self.window.students
         elif widget is self.window.course_journal:
-            widget = widget.currentWidget()
-            if widget is self.window.course_workspace.journal_pane:
-                field = getattr(self.window.course_workspace, "journal_search", None)
-                if field is not None:
-                    field.setFocus()
-                    field.selectAll()
-                    return
+            field = self.window.course_workspace.journal_search
+            field.setFocus()
+            field.selectAll()
+            return
+        elif widget is self.window.grading_page:
+            field = getattr(widget, "search", None)
+            if field is not None:
+                field.setFocus()
+                field.selectAll()
+            return
         if hasattr(widget, "open_search"):
             widget.open_search()
         field = getattr(widget, "search", None)
@@ -105,14 +108,16 @@ class Commands:
                 regions += [current.topics, current.members, current.lessons]
         elif current is self.window.course_journal:
             regions += [
-                current.tabBar(),
+                self.window.course_workspace.journal_search,
                 self.window.course_workspace.journal,
-                self.window.course_workspace.grading.journal,
             ]
-        elif current is self.window.calculation_pane:
-            regions += [current.tabBar(), self.window.course_workspace.grading.changes]
-        else:
-            regions += [self.window.readers, self.window.screens]
+        elif current is self.window.grading_page:
+            regions += [
+                current.tabs.tabBar(),
+                current.report_table,
+                current.journal,
+                current.changes,
+            ]
         regions = [widget for widget in regions if widget.isVisible() and widget.isEnabled()]
         if not regions:
             return
@@ -137,10 +142,8 @@ class Commands:
             else:
                 self.window.workspace.confirm_match()
         elif self.window.tabs.currentWidget() is self.window.course_journal:
-            if (
-                self.window.course_journal.currentWidget()
-                is self.window.course_workspace.journal_pane
-            ):
-                self.window.course_workspace.mark_rectangle()
-            else:
-                guarded(self.window, self.window.course_workspace.grading.open_report)
+            self.window.course_workspace.mark_rectangle()
+        elif self.window.tabs.currentWidget() is self.window.grading_page:
+            grading = self.window.grading_page
+            if grading.report_table.isVisible() and grading.open_report_action.isEnabled():
+                guarded(self.window, grading.open_report)

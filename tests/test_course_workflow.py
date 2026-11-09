@@ -130,7 +130,7 @@ def test_qt_course_navigation_identity_sort_and_written_only(course, tmp_path):
     try:
         assert window.course_workspace.courses.isVisible()
         assert not window.workspace.search.isVisible()
-        assert not window.tabs.isTabVisible(window.tabs.indexOf(window.calculation_pane))
+        assert window.tabs.isTabVisible(window.tabs.indexOf(window.grading_page))
         journal = window.course_workspace.journal
         before = {
             journal.item(row, 5).data(Qt.ItemDataRole.UserRole) for row in range(journal.rowCount())
@@ -149,7 +149,7 @@ def test_qt_course_navigation_identity_sort_and_written_only(course, tmp_path):
         service.grading.add_work(semester_course.id, "Тестовая обязательная работа", 20)
         window.course_workspace.show_course()
         assert not service.courses.get_course(semester_course.id).reports_enabled
-        assert window.tabs.isTabVisible(window.tabs.indexOf(window.calculation_pane))
+        assert window.tabs.isTabVisible(window.tabs.indexOf(window.grading_page))
     finally:
         window.close()
         app.processEvents()

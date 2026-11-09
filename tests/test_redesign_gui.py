@@ -130,6 +130,7 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
         workspace.show_context.setChecked(True)
         assert all(not workspace.table.isColumnHidden(column) for column in (1, 3, 4, 5))
         workspace.show_context.setChecked(False)
+    window.history.refresh()
     assert window.history.model.contexts
     controller.connect_reader(controller.available_readers()[0])
     controller.open_session(block.id, {block.pair_ids[-1]})
@@ -147,7 +148,7 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
     assert window.workspace.pinned_uid == "0011"
     assert [
         window.tabs.tabText(i) for i in range(window.tabs.count()) if window.tabs.isTabVisible(i)
-    ] == ["Занятие", "Курс", "Журнал", "Настройки"]
+    ] == ["Занятие", "Посещаемость", "Оценки", "Курс"]
     window.workspace.pinned_uid = None
     window.workspace.pending_uids.clear()
     window.workspace.queue.clear()

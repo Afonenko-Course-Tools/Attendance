@@ -1,7 +1,7 @@
 """Operator lesson workspace: viewed block is independent from active registration."""
 
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import QEvent, Qt, QTimer
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSplitter,
+    QStyle,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -33,14 +34,13 @@ from attendance_lab.presentation.attendance_models import (
     StudentSearch,
 )
 from attendance_lab.presentation.common import (
-    actions,
     guarded,
-    lesson_label,
     plain_label,
     private_message,
 )
 from attendance_lab.presentation.preparation import FormDialog
 from attendance_lab.presentation.sorting import sort_dialog
+from attendance_lab.presentation.toolbars import office_toolbar
 
 
 class LessonWorkspace(QWidget):
@@ -76,23 +76,39 @@ class LessonWorkspace(QWidget):
         self.blocks = QComboBox()
         self.today = QCheckBox("Только сегодня")
         self.today.setChecked(True)
-        bar.addWidget(plain_label("Занятие / блок"))
+        bar.addWidget(plain_label("Занятие"))
         bar.addWidget(self.blocks, 1)
         bar.addWidget(self.today)
         layout.addLayout(bar)
-        registration_actions = QHBoxLayout()
+        registration_actions = office_toolbar(self)
+        self.open_button = QPushButton("Открыть регистрацию")
+        self.open_button.setToolTip("Открыть регистрацию выбранного занятия · F9")
+        self.open_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.open_button.clicked.connect(self.open_selected)
+        registration_actions.addWidget(self.open_button)
+        self.stop_button = QPushButton("Завершить")
+        self.stop_button.setToolTip("Завершить текущую регистрацию · Shift+F9")
+        self.stop_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        self.stop_button.clicked.connect(self.close_active)
+        registration_actions.addWidget(self.stop_button)
         self.expand_button = QPushButton("Расширить на обе пары")
         self.expand_button.clicked.connect(self.expand)
         self.expand_button.hide()
-        manual_button = QPushButton("Отметить вручную · F2")
-        manual_button.clicked.connect(self.start_manual)
-        registration_actions.addWidget(manual_button)
-        self.correct_button = QPushButton("Исправить последнюю карту · F4")
+        self.manual_button = QPushButton("Ручная отметка")
+        self.manual_button.setToolTip("Найти студента и отметить посещение выбранного занятия · F2")
+        self.manual_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+        )
+        self.manual_button.clicked.connect(self.start_manual)
+        registration_actions.addWidget(self.manual_button)
+        self.correct_button = QPushButton("Исправить карту")
         self.correct_button.setEnabled(False)
+        self.correct_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        )
         self.correct_button.clicked.connect(self.correct_last_card)
         registration_actions.addWidget(self.correct_button)
-        registration_actions.addStretch()
-        layout.addLayout(registration_actions)
+        layout.addWidget(registration_actions)
         self.scope = plain_label(wrap=True)
         layout.addWidget(self.scope)
         self.search_button = QPushButton("Найти студента · F3")
@@ -107,6 +123,7 @@ class LessonWorkspace(QWidget):
         self.table = QTableView()
         self.table.setModel(self.proxy)
         self.table.setSortingEnabled(True)
+        self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.horizontalHeader().setStretchLastSection(False)
@@ -114,17 +131,24 @@ class LessonWorkspace(QWidget):
         for column, width in enumerate((200, 120, 65, 65, 150, 130, 100)):
             self.table.setColumnWidth(column, width)
         roster_layout.addWidget(self.table)
-        self.show_context = QCheckBox("Академический контекст")
+        self.show_context = QCheckBox("Подробнее о студенте")
         self.show_context.toggled.connect(self.toggle_context)
         roster_layout.addWidget(self.show_context)
         self.toggle_context(False)
-        roster_layout.addLayout(
-            actions(
-                ("Отметить выбранных…", self.manual_block),
-                ("История отметки…", self.show_evidence),
-                ("Сортировка…", lambda: sort_dialog(self, self.model, self.proxy, 7)),
-            )
+        selection_actions = office_toolbar(self)
+        self.manual_selected_button = QPushButton("Отметить выбранных")
+        self.manual_selected_button.setToolTip(
+            "Подтвердить посещение выбранных студентов · Enter в таблице"
         )
+        self.manual_selected_button.clicked.connect(self.manual_block)
+        selection_actions.addWidget(self.manual_selected_button)
+        self.evidence_button = QPushButton("История отметки")
+        self.evidence_button.clicked.connect(self.show_evidence)
+        selection_actions.addWidget(self.evidence_button)
+        self.sort_button = QPushButton("Сортировка")
+        self.sort_button.clicked.connect(lambda: sort_dialog(self, self.model, self.proxy, 7))
+        selection_actions.addWidget(self.sort_button)
+        roster_layout.addWidget(selection_actions)
         self.counts = plain_label()
         roster_layout.addWidget(self.counts)
         splitter.addWidget(roster)
@@ -202,7 +226,11 @@ class LessonWorkspace(QWidget):
         self.next_match.setContext(Qt.ShortcutContext.WidgetShortcut)
         self.next_match.activated.connect(self.focus_matches)
         self.matches.itemActivated.connect(lambda *_: self.confirm_match())
+        self.table.selectionModel().selectionChanged.connect(self.update_action_state)
+        self.matches.currentItemChanged.connect(self.update_action_state)
+        self.model.modelReset.connect(self.update_action_state)
         self.update_matching_visibility()
+        self.update_action_state()
 
     def open_search(self):
         self.search_expanded = True
@@ -220,10 +248,12 @@ class LessonWorkspace(QWidget):
         self.queue.setVisible(len(self.pending_uids) > 1)
         self.search_button.setVisible(not expanded)
         self.idle_space.setVisible(not expanded)
+        self.update_action_state()
 
     def toggle_context(self, visible):
         for column in (1, 3, 4, 5):
             self.table.setColumnHidden(column, not visible)
+        self.table.setColumnHidden(6, self.is_lecture())
 
     def eventFilter(self, watched, event):
         if watched is self.match_scroll.viewport() and event.type() == QEvent.Type.Resize:
@@ -266,6 +296,103 @@ class LessonWorkspace(QWidget):
                     scrollbar.value() + bottom - self.match_scroll.viewport().height()
                 )
 
+    def is_lecture(self):
+        return (
+            self.selected_course_id is not None
+            and self.service.courses.get_course(self.selected_course_id).kind == "lecture"
+        )
+
+    def block_title(self, block):
+        if self.selected_course_id is not None:
+            occurrence = next(
+                (
+                    lesson
+                    for lesson in self.service.courses.list_lessons(self.selected_course_id)
+                    if lesson.block_id == block.id
+                ),
+                None,
+            )
+            if occurrence:
+                topic = next(
+                    (
+                        topic
+                        for topic in self.service.courses.list_topics(self.selected_course_id)
+                        if topic.id == occurrence.topic_id
+                    ),
+                    None,
+                )
+                if topic:
+                    return f"{topic.number}. {topic.title}"
+        return block.title or "Занятие"
+
+    def manual_allowed(self, pair_ids):
+        if not pair_ids:
+            return False
+        active = set()
+        if self.controller.active_session_id is not None:
+            session = self.api.get_session(self.controller.active_session_id)
+            if session.closed_at is None:
+                active.update(self.api.get_block(session.block_id).pair_ids)
+        elif self.controller.active_lesson_id is not None:
+            active.add(self.controller.active_lesson_id)
+        now = datetime.now(UTC)
+        return all(
+            pair in active or self.service.get_lesson(pair).ends_at <= now for pair in pair_ids
+        )
+
+    def update_action_state(self, *_):
+        if not hasattr(self, "confirm_button"):
+            return
+        pairs = self.viewed_pair_ids()
+        selected = self.selected_ids()
+        self.search_button.setEnabled(bool(self.cache.students))
+        self.open_button.setEnabled(bool(pairs) and self.controller.active_lesson_id not in pairs)
+        self.stop_button.setEnabled(
+            self.controller.active_lesson_id is not None
+            or self.controller.active_session_id is not None
+        )
+        manual_enabled = self.manual_allowed(pairs)
+        self.manual_button.setEnabled(manual_enabled)
+        self.manual_selected_button.setEnabled(manual_enabled and bool(selected))
+        self.manual_button.setToolTip(
+            "Найти студента и отметить посещение выбранного занятия · F2"
+            if manual_enabled
+            else "Для будущего занятия сначала откройте регистрацию"
+            if pairs
+            else "Сначала выберите занятие"
+        )
+        self.manual_selected_button.setToolTip(
+            "Подтвердить посещение выбранных студентов · Enter в таблице"
+            if manual_enabled
+            else self.manual_button.toolTip()
+        )
+        has_evidence = bool(pairs and selected) and any(
+            evidence.student_id in selected
+            for pair in pairs
+            for evidence in self.api.pair_evidence(pair)
+        )
+        self.evidence_button.setEnabled(has_evidence)
+        self.evidence_button.setToolTip(
+            "Посмотреть предъявления и ручные отметки выбранных студентов"
+            if has_evidence
+            else "Выберите студента с сохранённой отметкой"
+        )
+        self.sort_button.setEnabled(self.model.rowCount() > 1)
+        matching_target = (
+            self.manual_allowed(self.manual_pair_ids) if self.manual_mode else bool(self.pinned_uid)
+        )
+        self.confirm_button.setEnabled(self.matches.currentItem() is not None and matching_target)
+        self.defer_button.setEnabled(
+            bool(self.manual_mode or self.pinned_uid or self.search_expanded)
+        )
+        self.defer_button.setText(
+            "Отменить ручную отметку · Esc"
+            if self.manual_mode
+            else "Отложить карту · Esc"
+            if self.pinned_uid
+            else "Закрыть поиск · Esc"
+        )
+
     def refresh(self, *_):
         self.cache = StudentSearch(self.api.list_student_contexts())
         selected = self.blocks.currentData()
@@ -285,16 +412,19 @@ class LessonWorkspace(QWidget):
         by_id = {p.id: p for p in lessons}
         entries = []
         for block in blocks:
-            if self.today.isChecked() and block.date != date.today():
+            if (
+                self.today.isChecked()
+                and block.date != datetime.now(ZoneInfo(block.timezone)).date()
+            ):
                 continue
             roster = rosters[block.roster_id]
-            entries.append(
-                (
-                    by_id[block.pair_ids[0]].starts_at,
-                    f"{block.date:%d.%m.%Y} · пара {block.start_slot} · {disciplines[roster.discipline_id]} · {block.title or roster.name} · {block.room}",
-                    block.id,
-                )
-            )
+            first, last = by_id[block.pair_ids[0]], by_id[block.pair_ids[-1]]
+            zone = ZoneInfo(block.timezone)
+            title = self.block_title(block)
+            label = f"{block.date:%d.%m.%Y} · {first.starts_at.astimezone(zone):%H:%M}–{last.ends_at.astimezone(zone):%H:%M} · {title}"
+            if self.selected_course_id is None:
+                label += f" · {disciplines[roster.discipline_id]}"
+            entries.append((first.starts_at, label, block.id))
         for lesson in lessons:
             if self.selected_course_id is not None:
                 continue
@@ -302,13 +432,14 @@ class LessonWorkspace(QWidget):
                 continue
             if (
                 self.today.isChecked()
-                and lesson.starts_at.astimezone(ZoneInfo(lesson.timezone)).date() != date.today()
+                and lesson.starts_at.astimezone(ZoneInfo(lesson.timezone)).date()
+                != datetime.now(ZoneInfo(lesson.timezone)).date()
             ):
                 continue
             entries.append(
                 (
                     lesson.starts_at,
-                    lesson_label(lesson, disciplines[lesson.discipline_id]),
+                    f"{lesson.starts_at.astimezone(ZoneInfo(lesson.timezone)):%d.%m.%Y · %H:%M}–{lesson.ends_at.astimezone(ZoneInfo(lesson.timezone)):%H:%M} · {lesson.title or disciplines[lesson.discipline_id]}",
                     f"lesson:{lesson.id}",
                 )
             )
@@ -354,8 +485,25 @@ class LessonWorkspace(QWidget):
                     if roster and d.id == roster.discipline_id
                 )
             )
-            self.scope.setText(
-                f"Просмотр: {course_name} · {block.title} · {block.date:%d.%m.%Y} · {first.starts_at.astimezone(zone):%H:%M}–{last.ends_at.astimezone(zone):%H:%M} · {roster.name if roster else ''}"
+            if self.is_lecture():
+                self.scope.setText("Поток · посещение за занятие")
+            else:
+                name = (
+                    roster.name
+                    if roster
+                    and not roster.name.startswith(
+                        ("Исторический состав", "Восстановленный состав")
+                    )
+                    else ""
+                )
+                self.scope.setText(
+                    (name + " · " if name else "")
+                    + ("Две пары · одна отметка" if len(pair_ids) == 2 else "Посещение за занятие")
+                )
+            self.scope.setToolTip(
+                f"{course_name} · {self.block_title(block)}\n"
+                f"{block.date:%d.%m.%Y} · {first.starts_at.astimezone(zone):%H:%M}–{last.ends_at.astimezone(zone):%H:%M}"
+                + (f" · ауд. {block.room}" if block.room else "")
             )
         elif self.viewed_lesson_id is not None:
             pair_ids = (self.viewed_lesson_id,)
@@ -364,12 +512,12 @@ class LessonWorkspace(QWidget):
             students.update(
                 (s.student_id, s) for s in self.cache.students if s.student_id in expected
             )
-            self.scope.setText(
-                "Отдельное занятие: F9 — открыть регистрацию. Просмотр не переключает регистрацию."
-            )
+            self.scope.setText("Посещение за занятие")
         else:
             self.scope.setText(
-                "Занятий нет. Снимите «Только сегодня», чтобы увидеть другие даты, или создайте занятие в «Подготовке»."
+                "Сегодня занятий нет. Снимите «Только сегодня», чтобы выбрать другую дату."
+                if self.today.isChecked()
+                else "Занятий пока нет. Добавьте занятие в разделе «Курс»."
             )
         if self.course.currentData() is None:
             courses = {
@@ -390,7 +538,8 @@ class LessonWorkspace(QWidget):
             self.pinned_uid = self.pending_uids[0]
             self.uid_label.setText("Сопоставление карты: " + self.pinned_uid)
         self.update_last_card()
-        self.model.whole_block = self.selected_course_id is not None
+        self.model.whole_block = True
+        self.toggle_context(self.show_context.isChecked())
         self.model.set_students(
             students.values(), pair_ids[:1] if self.model.whole_block else pair_ids
         )
@@ -415,7 +564,8 @@ class LessonWorkspace(QWidget):
         self.expand_button.setEnabled(self.controller.active_session_id is not None)
         pair_ids = self.viewed_pair_ids()
         if not pair_ids:
-            self.counts.setText("Состав: 0")
+            self.counts.setText("Выберите занятие")
+            self.update_action_state()
             return
         text = []
         zone = ZoneInfo(self.service.get_lesson(pair_ids[0]).timezone)
@@ -436,23 +586,35 @@ class LessonWorkspace(QWidget):
                         ) + evidence.at.astimezone(zone).strftime("%H:%M")
             count = self.service.lesson_counts(pair)
             text.append(
-                f"Пара #{pair}: {count.identified_students}/{count.expected_students} · карт без связи: {count.unidentified_cards}"
+                f"Отмечено: {count.identified_students} · по списку: {count.expected_students} · непривязанных карт: {count.unidentified_cards}"
             )
         if outside:
             self.model.append_students(outside.values())
         self.model.update_attendance(values)
-        if self.model.whole_block:
-            marked = {student for student, _ in values}
-            self.counts.setText(
-                f"Посещение занятия: {len(marked)}/{len(self.model.students)} · одна отметка на весь блок"
-            )
-        else:
-            self.counts.setText(" | ".join(text))
+        marked = {student for student, _ in values}
+        unknown = {
+            evidence.uid
+            for pair in pair_ids
+            for evidence in self.api.pair_evidence(pair)
+            if evidence.active and evidence.student_id is None and evidence.uid
+        }
+        self.counts.setText(
+            f"Отмечено: {len(marked)}" + (f" · ожидают привязки: {len(unknown)}" if unknown else "")
+        )
+        expected = set().union(*self.expected_by_pair.values()) if self.expected_by_pair else set()
+        self.counts.setToolTip(
+            f"В исходном списке занятия: {len(expected)}. В таблице: {len(self.model.students)}. "
+            "Предъявления студентов вне исходного списка также сохранены."
+        )
+        self.update_action_state()
 
     def selected_ids(self):
         return {i.data(IDENTITY) for i in self.table.selectionModel().selectedRows()}
 
     def open_selected(self):
+        self.update_action_state()
+        if not self.open_button.isEnabled():
+            return
         if self.viewed_lesson_id is not None:
             self.open_standalone(self.viewed_lesson_id)
             self.search.setFocus() if self.course.currentData() is not None else self.course.setFocus()
@@ -472,6 +634,9 @@ class LessonWorkspace(QWidget):
         guarded(self, lambda: (self.controller.open_lesson(lesson_id), self.changed()))
 
     def close_active(self):
+        self.update_action_state()
+        if not self.stop_button.isEnabled():
+            return
         guarded(self, lambda: (self.controller.close_session(), self.changed()))
 
     def expand(self):
@@ -497,12 +662,28 @@ class LessonWorkspace(QWidget):
             ],
             key=lambda s: s.student_id not in roster_ids,
         )[:80]:
-            item = QListWidgetItem(
-                f"{student.full_name} · {student.record_book_number or 'книжка не указана'} · {student.course} курс · гр. {student.group_number or '—'} · {student.specialty} · {student.profile} · {getattr(student, 'subgroup', '') or '—'}",
-                self.matches,
+            details = [student.full_name]
+            if student.group_number is not None:
+                details.append(f"гр. {student.group_number}")
+            if student.record_book_number:
+                details.append(student.record_book_number)
+            item = QListWidgetItem(" · ".join(details), self.matches)
+            item.setToolTip(
+                " · ".join(
+                    str(value)
+                    for value in (
+                        student.full_name,
+                        student.record_book_number,
+                        student.specialty,
+                        student.profile,
+                        "" if self.is_lecture() else getattr(student, "subgroup", ""),
+                    )
+                    if value
+                )
             )
             item.setData(IDENTITY, student.student_id)
         self.matches.setCurrentRow(-1)
+        self.update_action_state()
 
     def scan(self, scan, result):
         if result.kind in ("success", "repeat"):
@@ -552,7 +733,7 @@ class LessonWorkspace(QWidget):
             if self.last_card_uid
             else "Пока нет карты для исправления"
         )
-        self.correct_button.setToolTip(target)
+        self.correct_button.setToolTip(target + " · F4")
         if (
             self.last_card_uid
             and self.last_presented_uid
@@ -565,7 +746,7 @@ class LessonWorkspace(QWidget):
             )
             self.correct_button.setText(f"Исправить {name} · F4")
         else:
-            self.correct_button.setText("Исправить последнюю карту · F4")
+            self.correct_button.setText("Исправить карту")
         if self.last_presented_kind == "display_error":
             text = "Ошибка обновления экрана\nПроверьте отметку в журнале"
             background, foreground = "#fee2e2", "#991b1b"
@@ -681,6 +862,10 @@ class LessonWorkspace(QWidget):
         )
 
     def start_manual(self):
+        if self.viewed_pair_ids() and not self.manual_allowed(self.viewed_pair_ids()):
+            self.scope.setText("Для ручной отметки будущего занятия сначала откройте регистрацию.")
+            self.update_action_state()
+            return
         if not self.viewed_pair_ids():
             private_message(self, "Ручная отметка", "Сначала выберите просматриваемое занятие.")
             return
@@ -700,6 +885,10 @@ class LessonWorkspace(QWidget):
         self.course.setFocus() if self.course.currentData() is None else self.search.setFocus()
 
     def confirm_match(self):
+        if self.manual_mode and not self.manual_allowed(self.manual_pair_ids):
+            self.feedback.setText("Регистрация закрыта. Отметка будущего занятия пока недоступна.")
+            self.update_action_state()
+            return
         item = self.matches.currentItem()
         if item is None:
             self.feedback.setText("Явно выберите студента в результатах поиска.")
@@ -772,12 +961,16 @@ class LessonWorkspace(QWidget):
         pairs = self.viewed_pair_ids()
         if not ids or not pairs:
             return
+        if not self.manual_allowed(pairs):
+            self.scope.setText("Для ручной отметки будущего занятия сначала откройте регистрацию.")
+            self.update_action_state()
+            return
         targets = {(student, pair) for student in ids for pair in pairs}
         names = "\n".join(s.full_name for s in self.model.students if s.student_id in ids)
         reason, ok = QInputDialog.getText(
             self,
             "Ручная отметка выбранных",
-            f"{self.blocks.currentText()} · пары {pairs}\n{names}\nСтудентов: {len(ids)} · отметок: {len(targets)}\nПричина:",
+            f"{self.blocks.currentText()}\n{names}\nСтудентов: {len(ids)} · посещение всего занятия\nПричина:",
         )
         if ok:
             guarded(
@@ -796,14 +989,15 @@ class LessonWorkspace(QWidget):
             return
         dialog = FormDialog("Основания присутствия", self)
         listing = QListWidget()
+        names = {student.student_id: student.full_name for student in self.cache.students}
         for student in sorted(ids):
             for pair in pairs:
                 for evidence in self.api.evidence(student, pair):
                     item = QListWidgetItem(
-                        f"{student} · {evidence.kind} · {evidence.at.astimezone(ZoneInfo(self.service.get_lesson(pair).timezone)):%d.%m %H:%M} · {'действует' if evidence.active else 'отменено'}",
+                        f"{names.get(student, 'Студент')} · {'Ручная отметка' if evidence.kind == 'manual' else 'Карта'} · {evidence.at.astimezone(ZoneInfo(self.service.get_lesson(pair).timezone)):%d.%m %H:%M} · {'действует' if evidence.active else 'отменено'}",
                         listing,
                     )
-                    item.setData(IDENTITY, evidence.batch_id)
+                    item.setData(IDENTITY, evidence.batch_id if evidence.active else None)
         dialog.form.addRow(listing)
 
         def revoke():
@@ -814,8 +1008,14 @@ class LessonWorkspace(QWidget):
                 self.evidence_changed()
                 dialog.accept()
 
-        dialog.form.addRow(
-            actions(("Отменить выбранную ручную пачку", lambda: guarded(dialog, revoke)))
+        revoke_button = QPushButton("Отменить ручную отметку")
+        revoke_button.setEnabled(False)
+        revoke_button.clicked.connect(lambda: guarded(dialog, revoke))
+        listing.currentItemChanged.connect(
+            lambda item, previous: revoke_button.setEnabled(
+                item is not None and item.data(IDENTITY) is not None
+            )
         )
+        dialog.form.addRow(revoke_button)
         dialog.finish()
         dialog.exec()

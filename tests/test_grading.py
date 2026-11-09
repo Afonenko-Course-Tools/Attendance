@@ -281,7 +281,7 @@ def test_calculation_widget_preview_does_not_change_applied_or_original_scores(
     pane.set_context(course.id, first.id)
     pane.resize(980, 720)
     pane.show()
-    pane.tabs.setCurrentIndex(1)
+    pane.tabs.setCurrentIndex(2)
     pane.parameters["neutral"].setValue(9)
     qapp.processEvents()
     assert service.grading.parameters(course.id).neutral == 7
@@ -387,16 +387,21 @@ def test_main_window_calculation_integration_with_theme(graded_course, qapp, tmp
     window.course_workspace.courses.setCurrentIndex(
         window.course_workspace.courses.findData(course.id)
     )
-    window.tabs.setCurrentWidget(window.calculation_pane)
+    window.tabs.setCurrentWidget(window.grading_page)
+    window.grading_page.tabs.setCurrentIndex(0)
     window.resize(980, 720)
     window.show()
     qapp.processEvents()
     pane = window.course_workspace.grading
+    pane.report_table.selectRow(0)
+    qapp.processEvents()
+    window.grab().save(str(tmp_path / "synthetic-main-reports.png"))
+    pane.tabs.setCurrentIndex(2)
     pane.parameters["neutral"].setValue(9)
     qapp.processEvents()
     assert pane.histogram.current[7] == 1
     assert pane.histogram.preview_counts[9] == 1
-    assert window.tabs.isTabVisible(window.tabs.indexOf(window.calculation_pane))
+    assert window.tabs.isTabVisible(window.tabs.indexOf(window.grading_page))
     assert pane.histogram.isVisible()
     assert pane.changes.isVisible()
     pane.calculation_scroll.ensureWidgetVisible(pane.histogram)
@@ -470,3 +475,146 @@ def test_deleted_occurrence_hidden_but_saved_report_history_survives(graded_cour
     headers, rows = grading.export_projection(course.id)
     assert actual.isoformat() in rows[0][attendance]
     assert tuple(service.repository.rd_pair_evidence(block.pair_ids[0])) == before_evidence
+
+
+def test_grades_discoverable_before_modules_and_enable_reports_for_selected_course(
+    graded_course, qapp, tmp_path
+):
+    from attendance_lab.presentation.grading import GradingPane
+
+    service, course, first, _ = graded_course
+    service.courses.save_course(
+        course.discipline_id,
+        course.academic_year_id,
+        course.semester,
+        course.study_course,
+        course.kind,
+        course.duration,
+        course.name,
+        False,
+        course.id,
+    )
+    other = service.courses.save_course(
+        course.discipline_id,
+        course.academic_year_id,
+        2,
+        course.study_course,
+        course.kind,
+        course.duration,
+        "Другой семестр",
+        False,
+    )
+    pane = GradingPane(service)
+    pane.set_context(course.id, first.id)
+    pane.resize(980, 720)
+    pane.show()
+    qapp.processEvents()
+    assert [pane.tabs.tabText(i) for i in range(pane.tabs.count())] == [
+        "Доклады",
+        "Контрольные работы",
+        "Итоги",
+    ]
+    assert pane.enable_reports_action.isVisible() and pane.enable_reports_action.isEnabled()
+    assert not pane.open_report_action.isEnabled()
+    assert not pane.paste_action.isEnabled()
+    assert "пока не включены" in pane.report_notice.text()
+    assert not pane.report_table.isVisible()
+    assert pane.calculation_settings.isHidden()
+    assert pane.calculation_actions.isHidden()
+    assert not pane.advanced_action.isVisible()
+    pane.tabs.setCurrentIndex(2)
+    pane.settings_action.trigger()
+    assert not pane.calculation_settings.isHidden()
+    assert not pane.calculation_actions.isHidden()
+    assert pane.advanced_action.isVisible()
+    pane.settings_action.trigger()
+    assert pane.calculation_settings.isHidden()
+    assert pane.calculation_actions.isHidden()
+    pane.tabs.setCurrentIndex(0)
+    assert not pane.coefficient_dialog.isVisible()
+    pane.grab().save(str(tmp_path / "grades-empty-reports.png"))
+    pane.enable_reports_action.trigger()
+    enabled = service.courses.get_course(course.id)
+    assert enabled == replace(course, reports_enabled=True)
+    assert not service.courses.get_course(other.id).reports_enabled
+    assert not pane.enable_reports_action.isVisible()
+    assert pane.report_table.isVisible() and pane.report_table.rowCount() == 3
+    assert not pane.open_report_action.isEnabled()
+    pane.report_table.selectRow(0)
+    qapp.processEvents()
+    assert pane.open_report_action.isEnabled()
+    pane.close()
+
+
+def test_control_creation_plain_grid_edit_and_rectangular_clipboard(
+    graded_course, qapp, monkeypatch, tmp_path
+):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QInputDialog
+
+    from attendance_lab.presentation.grading import GradingPane
+
+    service, course, first, _ = graded_course
+    pane = GradingPane(service)
+    pane.set_context(course.id, first.id)
+    pane.tabs.setCurrentIndex(1)
+    pane.resize(980, 720)
+    pane.show()
+    qapp.processEvents()
+    assert pane.add_work_action.isEnabled() and not pane.paste_action.isEnabled()
+    assert "пока нет" in pane.work_notice.text()
+    assert not pane.journal.isVisible()
+    titles = iter(["Контрольная 1", "Контрольная 2"])
+    monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: (next(titles), True))
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (20.0, True))
+    pane.add_work_action.trigger()
+    pane.add_work_action.trigger()
+    works = service.grading.works(course.id)
+    assert len(works) == 2
+    assert pane.journal.columnCount() == 3
+    assert pane.journal.horizontalHeaderItem(1).text() == "Контрольная 1 /20"
+    assert pane.journal.isVisible()
+    pane.journal.setCurrentCell(0, 1)
+    pane.journal.setFocus()
+    qapp.processEvents()
+    assert pane.paste_action.isEnabled()
+    QApplication.clipboard().setText("5\t0\n\t20")
+    QTest.keyClick(pane.journal, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+    scores = service.grading.scores(course.id)
+    students = service.grading.students(course.id)
+    assert scores[(students[0].student_id, works[0].id)] == 5
+    assert scores[(students[0].student_id, works[1].id)] == 0
+    assert (students[1].student_id, works[0].id) not in scores
+    assert scores[(students[1].student_id, works[1].id)] == 20
+    pane.journal.item(0, 1).setText("0")
+    assert service.grading.scores(course.id)[(students[0].student_id, works[0].id)] == 0
+    assert pane.journal.currentRow() == 0 and pane.journal.currentColumn() == 1
+    pane.grab().save(str(tmp_path / "grades-controls.png"))
+    pane.close()
+
+
+def test_report_double_click_opens_selected_student_and_viewed_instance(
+    graded_course, qapp, monkeypatch
+):
+    from PySide6.QtWidgets import QDialog
+
+    import attendance_lab.presentation.grading as grading_ui
+
+    service, course, first, _ = graded_course
+    pane = grading_ui.GradingPane(service)
+    pane.set_context(course.id, first.id)
+    captured = []
+
+    class CardStub:
+        def __init__(self, workflow, course_id, student_id, lesson_id, parent):
+            captured.append((course_id, student_id, lesson_id))
+
+        def exec(self):
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(grading_ui, "ReportCardDialog", CardStub)
+    pane.report_table.setCurrentCell(1, 0)
+    pane.report_table.itemDoubleClicked.emit(pane.report_table.item(1, 0))
+    assert captured == [(course.id, service.grading.students(course.id)[1].student_id, first.id)]
+    pane.close()

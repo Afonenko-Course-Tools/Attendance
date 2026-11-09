@@ -1,5 +1,6 @@
 """Course centred programme, membership and schedule commands."""
 
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from PySide6.QtCore import QDate, Qt
@@ -10,15 +11,18 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
     QHBoxLayout,
+    QHeaderView,
     QLineEdit,
+    QSpinBox,
+    QStyle,
     QTabWidget,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from attendance_lab.application.redesign import SLOTS
 from attendance_lab.presentation.common import (
-    actions,
     fill_table,
     guarded,
     plain_label,
@@ -31,6 +35,7 @@ from attendance_lab.presentation.lesson_lifecycle import (
     restore_lessons_dialog,
 )
 from attendance_lab.presentation.preparation import FormDialog, checked, choices, combo, spin
+from attendance_lab.presentation.toolbars import office_toolbar, tool_action, tool_menu
 
 
 class CourseWorkspace(QWidget):
@@ -42,51 +47,73 @@ class CourseWorkspace(QWidget):
         outer = QVBoxLayout(self)
         self.courses = QComboBox()
         outer.addWidget(self.courses)
-        outer.addLayout(
-            actions(
-                ("Новый курс…", self.new_course),
-                ("Копировать в семестр…", self.copy_course),
-                ("Возможности и настройки…", self.settings_dialog),
-                ("Добавить письменную работу…", self.add_written),
-            )
+        self.tools = {}
+        toolbar = office_toolbar(self)
+        self.tools["new_course"] = tool_action(
+            toolbar, "Новый курс", QStyle.StandardPixmap.SP_FileIcon, self.new_course
         )
+        self.tools["settings"] = tool_action(
+            toolbar,
+            "Настройки",
+            QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            self.settings_dialog,
+        )
+        more = tool_menu(toolbar)
+        self.tools["copy"] = more.addAction("Копировать в другой семестр…", self.copy_course)
+        self.tools["written"] = more.addAction("Добавить письменную работу…", self.add_written)
+        outer.addWidget(toolbar)
         self.summary = plain_label(wrap=True)
         outer.addWidget(self.summary)
         self.tabs = QTabWidget()
         programme = QWidget()
         layout = QVBoxLayout(programme)
-        layout.addLayout(actions(("Добавить / изменить тему…", self.topic_dialog)))
+        toolbar = office_toolbar(self)
+        self.tools["add_topic"] = tool_action(
+            toolbar,
+            "Добавить тему",
+            QStyle.StandardPixmap.SP_FileIcon,
+            lambda: self.topic_dialog(False),
+        )
+        self.tools["edit_topic"] = tool_action(
+            toolbar, "Изменить", QStyle.StandardPixmap.SP_FileDialogDetailedView, self.topic_dialog
+        )
+        layout.addWidget(toolbar)
         self.topics = table(["№", "Тема"])
         layout.addWidget(self.topics)
         members = QWidget()
         layout = QVBoxLayout(members)
-        layout.addLayout(
-            actions(
-                ("Добавить годовые группы…", self.groups_dialog),
-                ("Создать подгруппу…", lambda: self.groups_dialog(True)),
-            )
+        toolbar = office_toolbar(self)
+        self.tools["groups"] = tool_action(
+            toolbar, "Добавить группы", QStyle.StandardPixmap.SP_DirIcon, self.groups_dialog
         )
+        self.tools["subgroup"] = tool_action(
+            toolbar,
+            "Подгруппа",
+            QStyle.StandardPixmap.SP_FileDialogNewFolder,
+            lambda: self.groups_dialog(True),
+        )
+        layout.addWidget(toolbar)
         self.members = table(["Состав", "Группы", "Студентов"])
         layout.addWidget(self.members)
         schedule = QWidget()
         layout = QVBoxLayout(schedule)
-        layout.addLayout(
-            actions(
-                ("Запланировать…", self.schedule_dialog),
-                ("Перенести выбранное…", self.move_dialog),
-                ("Регулярность с даты…", self.recurrence_dialog),
-                ("Просмотр занятия", self.view_lesson),
-            )
+        toolbar = office_toolbar(self)
+        self.tools["schedule"] = tool_action(
+            toolbar, "Добавить занятие", QStyle.StandardPixmap.SP_FileIcon, self.schedule_dialog
         )
-        layout.addLayout(
-            actions(
-                ("Удалить выбранное…", self.delete_selected),
-                (
-                    "Удалённые занятия…",
-                    lambda: restore_lessons_dialog(self, self.service, self.changed),
-                ),
-            )
+        self.tools["view"] = tool_action(
+            toolbar, "Открыть", QStyle.StandardPixmap.SP_DialogOpenButton, self.view_lesson
         )
+        self.tools["move"] = tool_action(
+            toolbar, "Перенести", QStyle.StandardPixmap.SP_ArrowRight, self.move_dialog
+        )
+        more = tool_menu(toolbar)
+        self.tools["recurrence"] = more.addAction("Изменить регулярность…", self.recurrence_dialog)
+        self.tools["delete"] = more.addAction("Удалить выбранное занятие…", self.delete_selected)
+        self.tools["restore"] = more.addAction(
+            "Удалённые занятия…", lambda: restore_lessons_dialog(self, self.service, self.changed)
+        )
+        layout.addWidget(toolbar)
         self.lessons = table(["Дата", "Пары", "Тема", "Состав", "Аудитория"])
         layout.addWidget(self.lessons)
         self.lessons.itemDoubleClicked.connect(lambda *_: self.view_lesson())
@@ -99,22 +126,29 @@ class CourseWorkspace(QWidget):
         jp = QWidget()
         self.journal_pane = jp
         jl = QVBoxLayout(jp)
-        jl.addLayout(
-            actions(
-                ("Отметить выделенные темы…", self.mark_rectangle),
-                ("Экспорт XLSX…", lambda: guarded(self, self.export_journal)),
-            )
+        toolbar = office_toolbar(self)
+        self.tools["mark"] = tool_action(
+            toolbar,
+            "Отметить",
+            QStyle.StandardPixmap.SP_DialogApplyButton,
+            self.mark_rectangle,
+            "Подтвердить посещение выделенных ячеек",
         )
+        self.tools["export"] = tool_action(
+            toolbar,
+            "Экспорт",
+            QStyle.StandardPixmap.SP_DialogSaveButton,
+            lambda: guarded(self, self.export_journal),
+            "Сохранить журнал в XLSX",
+        )
+        jl.addWidget(toolbar)
         filters = QHBoxLayout()
         self.journal_search = QLineEdit()
         self.journal_search.setPlaceholderText("ФИО, группа, подгруппа, специальность")
         self.journal_search.textChanged.connect(self.filter_journal)
         filters.addWidget(self.journal_search)
-        context = QCheckBox("Учебный контекст")
-        context.toggled.connect(
-            lambda visible: [self.journal.setColumnHidden(c, not visible) for c in range(1, 5)]
-        )
-        filters.addWidget(context)
+        self.journal_context = QCheckBox("Группы и специальности")
+        self.journal_context.toggled.connect(self.show_journal_context)
         self.journal_sort = combo(
             [("По ФИО", 0), ("По группе", 1), ("По подгруппе", 2), ("По специальности", 3)]
         )
@@ -123,8 +157,26 @@ class CourseWorkspace(QWidget):
                 self.journal_sort.currentData(), Qt.SortOrder.AscendingOrder
             )
         )
-        filters.addWidget(self.journal_sort)
+        self.journal_status = combo([("Все студенты", False), ("С пропусками", True)])
+        self.journal_status.currentIndexChanged.connect(self.filter_journal)
+        filters.addWidget(self.journal_status)
+        self.absence_threshold = QSpinBox()
+        self.absence_threshold.setRange(1, 999)
+        self.absence_threshold.setPrefix("От ")
+        self.absence_threshold.setToolTip("Минимальное число пропущенных тем")
+        self.absence_threshold.setMaximumWidth(90)
+        self.absence_threshold.valueChanged.connect(self.filter_journal)
+        filters.addWidget(self.absence_threshold)
+        more = tool_menu(toolbar, "Вид")
+        for widget in (self.journal_context, self.journal_sort):
+            action = QWidgetAction(more)
+            action.setDefaultWidget(widget)
+            more.addAction(action)
         jl.addLayout(filters)
+        self.journal_notice = plain_label(wrap=True)
+        self.journal_notice.setObjectName("Muted")
+        self.journal_notice.hide()
+        jl.addWidget(self.journal_notice)
         jl.addWidget(self.journal)
         self.tabs.addTab(jp, "Посещения")
         self.grading = GradingPane(service, files=files, parent=self)
@@ -134,7 +186,11 @@ class CourseWorkspace(QWidget):
         )
         self.tabs.addTab(preparation, "Учебный список и каталоги")
         outer.addWidget(self.tabs)
+        self.topics.itemSelectionChanged.connect(self.update_actions)
+        self.lessons.itemSelectionChanged.connect(self.update_actions)
+        self.journal.itemSelectionChanged.connect(self.update_actions)
         self.courses.currentIndexChanged.connect(self.show_course)
+        self.update_actions()
         self.lesson_workspace.blocks.currentIndexChanged.connect(self.sync_lesson_context)
 
     @property
@@ -151,33 +207,34 @@ class CourseWorkspace(QWidget):
         self.courses.blockSignals(False)
         self.show_course()
 
-    def run(self, d, save):
+    def run(self, d, save, *, select_saved_course=False):
         d.finish()
         if d.exec() == QDialog.DialogCode.Accepted:
-            guarded(self, lambda: (save(), self.changed(), self.refresh()))
+
+            def apply():
+                saved = save()
+                self.changed()
+                self.refresh()
+                if select_saved_course:
+                    self.courses.setCurrentIndex(self.courses.findData(saved.id))
+
+            guarded(self, apply)
 
     def show_course(self, *_):
         key = self.current_course_id
         if key is None:
-            self.summary.setText("Создайте семестровый курс, затем добавьте программу и группы.")
+            self.summary.setText("Создайте курс, затем добавьте темы и учебные группы.")
+            for listing in (self.topics, self.members, self.lessons, self.journal):
+                listing.setRowCount(0)
+            self.grading.set_context(None, None)
+            self.update_actions()
             return
         c = self.api.get_course(key)
-        self.grading.set_context(key, None)
+        self.grading.set_context(key, None, refresh=True)
         self.lesson_workspace.selected_course_id = key
         self.lesson_workspace.refresh()
-        window = cast(Any, self.window())
-        assessed = bool(c.reports_enabled or self.service.grading.works(key))
-        if hasattr(window, "course_journal"):
-            window.course_journal.setTabVisible(
-                window.course_journal.indexOf(self.grading), assessed
-            )
-        if hasattr(window, "calculation_pane"):
-            window.tabs.setTabVisible(
-                window.tabs.indexOf(window.calculation_pane),
-                assessed,
-            )
         self.summary.setText(
-            f"{c.duration} последовательные пары · одна регистрация на занятие · темы общие для всех групп"
+            f"{'Лекции · общий поток' if c.kind == 'lecture' else 'Общая программа для всех групп'} · {c.duration} {'пара' if c.duration == 1 else 'пары'} на занятие"
         )
         fill_table(
             self.topics,
@@ -185,18 +242,32 @@ class CourseWorkspace(QWidget):
             [t.id for t in self.api.list_topics(key)],
         )
         rosters = {r.id: r for r in self.api.list_rosters(key)}
-        fill_table(
-            self.members,
-            [
+        groups = {g.id: g for g in self.service.redesign.list_groups(c.academic_year_id)}
+        if c.kind == "lecture":
+            group_ids = {g for r in rosters.values() for g in r.group_ids}
+            member_rows = (
+                [
+                    (
+                        "Общий поток",
+                        ", ".join(str(groups[g].number) for g in sorted(group_ids) if g in groups),
+                        len(self.api.list_students(key)),
+                    )
+                ]
+                if rosters
+                else []
+            )
+            member_keys = [key] if rosters else []
+        else:
+            member_rows = [
                 (
                     r.name,
-                    ", ".join(map(str, r.group_ids)),
-                    str(len(self.service.redesign._roster_contexts(r))),
+                    ", ".join(str(groups[g].number) for g in r.group_ids if g in groups),
+                    len(self.service.redesign._roster_contexts(r)),
                 )
                 for r in rosters.values()
-            ],
-            list(rosters),
-        )
+            ]
+            member_keys = list(rosters)
+        fill_table(self.members, member_rows, member_keys)
         topics = {t.id: t for t in self.api.list_topics(key)}
         rows = []
         self.lesson_ids = []
@@ -210,10 +281,10 @@ class CourseWorkspace(QWidget):
             b = self.service.redesign.get_block(lesson.block_id)
             rows.append(
                 (
-                    str(b.date),
-                    f"{b.start_slot}–{b.start_slot + c.duration - 1}",
+                    f"{b.date:%d.%m.%Y}",
+                    f"{SLOTS[b.start_slot - 1][0]}–{SLOTS[b.start_slot + c.duration - 2][1]}",
                     f"{topics[lesson.topic_id].number}. {topics[lesson.topic_id].title}",
-                    rosters[b.roster_id].name,
+                    "Общий поток" if c.kind == "lecture" else rosters[b.roster_id].name,
                     b.room,
                 )
             )
@@ -221,12 +292,14 @@ class CourseWorkspace(QWidget):
         fill_table(self.lessons, rows, self.lesson_ids)
         topics = self.api.list_topics(key)
         students = self.api.list_students(key)
-        self.journal.setColumnCount(5 + len(topics))
+        self.journal.setColumnCount(6 + len(topics))
         self.journal.setHorizontalHeaderLabels(
             ["ФИО", "Группа", "Подгруппа", "Специальность", "Профиль"]
-            + [f"{t.number}. {t.title}" for t in topics]
+            + [str(t.number) for t in topics]
+            + ["Пропуски"]
         )
         projection = self.api.attendance_projection(key)
+        self.refresh_absences(projection)
         fill_table(
             self.journal,
             [
@@ -236,23 +309,66 @@ class CourseWorkspace(QWidget):
                     s.subgroup or "",
                     s.specialty or "",
                     s.profile or "",
-                    *["✓" if (s.student_id, t.id) in projection else "" for t in topics],
+                    *[
+                        "✓"
+                        if (s.student_id, t.id) in projection
+                        else "—"
+                        if t.id in self.missed_topics.get(s.student_id, set())
+                        else ""
+                        for t in topics
+                    ],
+                    len(self.missed_topics.get(s.student_id, set())),
                 )
                 for s in students
             ],
             [s.student_id for s in students],
         )
         for row, s in enumerate(students):
+            count_item = self.journal.item(row, self.journal.columnCount() - 1)
+            assert count_item is not None
+            count_item.setData(
+                Qt.ItemDataRole.DisplayRole, len(self.missed_topics.get(s.student_id, set()))
+            )
             for col, t in enumerate(topics, 5):
                 item = self.journal.item(row, col)
                 assert item is not None
                 item.setData(Qt.ItemDataRole.UserRole, (s.student_id, t.id))
-        for column in range(1, 5):
-            self.journal.setColumnHidden(column, True)
+                item.setToolTip(
+                    f"{s.full_name}\nТема {t.number}: {t.title}\n"
+                    + (
+                        "Посещение подтверждено"
+                        if (s.student_id, t.id) in projection
+                        else "Пропуск"
+                        if t.id in self.missed_topics.get(s.student_id, set())
+                        else "Нет проведённого занятия для этого состава"
+                    )
+                )
+        self.show_journal_context()
+        self.journal.horizontalHeader().setStretchLastSection(False)
+        self.journal.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.journal.setColumnWidth(1, 70)
+        for column, t in enumerate(topics, 5):
+            self.journal.setColumnWidth(column, 44)
+            header = self.journal.horizontalHeaderItem(column)
+            assert header is not None
+            header.setToolTip(f"Тема {t.number}: {t.title}")
+        self.journal.setColumnWidth(self.journal.columnCount() - 1, 80)
+        self.lessons.setHorizontalHeaderLabels(
+            ["Дата", "Время", "Тема", "Поток" if c.kind == "lecture" else "Состав", "Ауд."]
+        )
+        self.lessons.setColumnHidden(3, c.kind == "lecture")
+        self.members.setHorizontalHeaderLabels(
+            ["Поток" if c.kind == "lecture" else "Состав", "Группы", "Студентов"]
+        )
+        self.lessons.horizontalHeader().setStretchLastSection(False)
+        self.lessons.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.lessons.setColumnWidth(4, 64)
+        self.topics.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.journal.setSortingEnabled(True)
         self.journal.sortItems(self.journal_sort.currentData(), Qt.SortOrder.AscendingOrder)
         self.filter_journal()
         self.sync_lesson_context()
+        self.update_actions()
 
     def export_journal(self):
         self.api.get_course(self.current_course_id)
@@ -297,6 +413,7 @@ class CourseWorkspace(QWidget):
                 name.text(),
                 reports.isChecked(),
             ),
+            select_saved_course=True,
         )
 
     def copy_course(self):
@@ -311,10 +428,12 @@ class CourseWorkspace(QWidget):
         d.form.addRow("Год", year)
         d.form.addRow("Семестр", semester)
         self.run(
-            d, lambda: self.api.copy_course(key, year.currentData(), semester.value(), name.text())
+            d,
+            lambda: self.api.copy_course(key, year.currentData(), semester.value(), name.text()),
+            select_saved_course=True,
         )
 
-    def topic_dialog(self):
+    def topic_dialog(self, edit=True):
         key = self.current_course_id
         if key is None:
             return
@@ -322,7 +441,7 @@ class CourseWorkspace(QWidget):
         number = spin(1, 999, len(self.api.list_topics(key)) + 1)
         title = QLineEdit()
         row = self.topics.currentRow()
-        if row >= 0:
+        if edit and row >= 0:
             number_item, title_item = self.topics.item(row, 0), self.topics.item(row, 1)
             assert number_item is not None and title_item is not None
             number.setValue(int(number_item.text()))
@@ -336,6 +455,8 @@ class CourseWorkspace(QWidget):
         if key is None:
             return
         c = self.api.get_course(key)
+        if partial and c.kind == "lecture":
+            return
         d = FormDialog("Подгруппа курса" if partial else "Добавить годовые группы", self)
         groups = choices(
             [
@@ -346,7 +467,8 @@ class CourseWorkspace(QWidget):
         )
         d.form.addRow("Группы", groups)
         name = QLineEdit()
-        d.form.addRow("Название состава", name)
+        if c.kind != "lecture":
+            d.form.addRow("Название состава", name)
         students = choices(
             [
                 (f"{s.full_name} · гр. {s.group_number}", s.student_id)
@@ -384,18 +506,22 @@ class CourseWorkspace(QWidget):
         d = FormDialog("Запланировать занятия", self)
         roster = combo([(r.name, r.id) for r in self.api.list_rosters(key)])
         topic = combo([(f"{t.number}. {t.title}", t.number) for t in self.api.list_topics(key)])
-        d.form.addRow("Состав", roster)
+        lecture = self.api.get_course(key).kind == "lecture"
+        if not lecture:
+            d.form.addRow("Состав", roster)
         d.form.addRow("Первая тема", topic)
         on, slot = self.date_slot(d)
         interval = combo([("Одно занятие", 0), ("Каждые 7 дней", 7), ("Каждые 14 дней", 14)])
         count = spin(1, 100, 1)
+        count.setEnabled(False)
+        interval.currentIndexChanged.connect(lambda: count.setEnabled(bool(interval.currentData())))
         room = QLineEdit()
         d.form.addRow("Повторение", interval)
-        d.form.addRow("Количество тем", count)
+        d.form.addRow("Занятий подряд по программе", count)
         d.form.addRow("Аудитория", room)
 
         def save():
-            args = (key, roster.currentData())
+            args = (key, self.api.lecture_roster(key).id if lecture else roster.currentData())
             if interval.currentData():
                 self.api.schedule_series(
                     *args,
@@ -426,6 +552,9 @@ class CourseWorkspace(QWidget):
             return
         d = FormDialog("Перенос одного занятия", self)
         on, slot = self.date_slot(d)
+        block = self.service.redesign.get_block(self.api.get_lesson(key).block_id)
+        on.setDate(QDate(block.date.year, block.date.month, block.date.day))
+        slot.setCurrentIndex(slot.findData(block.start_slot))
         self.run(d, lambda: self.api.move_instance(key, on.date().toPython(), slot.currentData()))
 
     def recurrence_dialog(self):
@@ -436,7 +565,10 @@ class CourseWorkspace(QWidget):
         if lesson.series_id is None:
             return
         d = FormDialog("Изменить регулярность с даты", self)
-        on, _ = self.date_slot(d)
+        block = self.service.redesign.get_block(lesson.block_id)
+        on = QDateEdit(QDate(block.date.year, block.date.month, block.date.day))
+        on.setCalendarPopup(True)
+        d.form.addRow("Начиная с даты", on)
         interval = combo([("7 дней", 7), ("14 дней", 14)])
         d.form.addRow("Интервал", interval)
         self.run(
@@ -462,7 +594,8 @@ class CourseWorkspace(QWidget):
         selected = {
             i.data(Qt.ItemDataRole.UserRole)
             for i in self.journal.selectedItems()
-            if i.column() >= 5
+            if isinstance(i.data(Qt.ItemDataRole.UserRole), tuple)
+            and not self.journal.isRowHidden(i.row())
         }
         if not selected:
             return
@@ -507,7 +640,6 @@ class CourseWorkspace(QWidget):
     def update_attendance(self, pair_ids=None):
         if self.current_course_id is None:
             return
-        projection = self.api.attendance_projection(self.current_course_id, pair_ids)
         affected = None
         if pair_ids is not None:
             affected = {
@@ -517,13 +649,34 @@ class CourseWorkspace(QWidget):
                     pair_ids
                 )
             }
+        complete_projection = self.api.attendance_projection(self.current_course_id)
+        self.refresh_absences(complete_projection)
+        sorting = self.journal.isSortingEnabled()
+        self.journal.setSortingEnabled(False)
         for row in range(self.journal.rowCount()):
-            for col in range(5, self.journal.columnCount()):
+            first = self.journal.item(row, 0)
+            if first is None:
+                continue
+            student_id = first.data(Qt.ItemDataRole.UserRole)
+            for col in range(5, self.journal.columnCount() - 1):
                 item = self.journal.item(row, col)
                 if item is not None:
                     student, topic = item.data(Qt.ItemDataRole.UserRole)
                     if affected is None or topic in affected:
-                        item.setText("✓" if (student, topic) in projection else "")
+                        item.setText(
+                            "✓"
+                            if (student, topic) in complete_projection
+                            else "—"
+                            if topic in self.missed_topics.get(student, set())
+                            else ""
+                        )
+            count = self.journal.item(row, self.journal.columnCount() - 1)
+            if count is not None:
+                count.setData(
+                    Qt.ItemDataRole.DisplayRole, len(self.missed_topics.get(student_id, set()))
+                )
+        self.journal.setSortingEnabled(sorting)
+        self.filter_journal()
 
     def settings_dialog(self):
         if self.current_course_id is None:
@@ -564,9 +717,15 @@ class CourseWorkspace(QWidget):
                 item = self.journal.item(row, col)
                 if item:
                     values.append(item.text())
-            self.journal.setRowHidden(
-                row, query not in " ".join(values).casefold().replace("ё", "е")
-            )
+            identity = self.journal.item(row, 0)
+            student_id = identity.data(Qt.ItemDataRole.UserRole) if identity else None
+            misses = len(getattr(self, "missed_topics", {}).get(student_id, set()))
+            hide = query not in " ".join(values).casefold().replace("ё", "е")
+            if self.journal_status.currentData():
+                hide = hide or misses < self.absence_threshold.value()
+            self.journal.setRowHidden(row, hide)
+        self.absence_threshold.setEnabled(bool(self.journal_status.currentData()))
+        self.update_actions()
 
     def delete_selected(self):
         selected = self.selected_lesson()
@@ -575,3 +734,141 @@ class CourseWorkspace(QWidget):
         occurrence = self.api.get_lesson(selected)
         block = self.service.redesign.get_block(occurrence.block_id)
         delete_lesson_dialog(self, self.service, block.pair_ids[0], self.changed)
+
+    def show_journal_context(self, *_):
+        lecture = (
+            self.current_course_id is not None
+            and self.api.get_course(self.current_course_id).kind == "lecture"
+        )
+        for column in (2, 3, 4):
+            self.journal.setColumnHidden(
+                column, not self.journal_context.isChecked() or (column == 2 and lecture)
+            )
+        self.journal.setColumnHidden(1, False)
+        self.journal_search.setPlaceholderText(
+            "ФИО, группа, специальность" if lecture else "ФИО, группа, подгруппа, специальность"
+        )
+        previous = self.journal_sort.currentData()
+        self.journal_sort.blockSignals(True)
+        self.journal_sort.clear()
+        for title, column in [
+            ("По ФИО", 0),
+            ("По группе", 1),
+            ("По подгруппе", 2),
+            ("По специальности", 3),
+        ]:
+            if column != 2 or not lecture:
+                self.journal_sort.addItem(title, column)
+        self.journal_sort.setCurrentIndex(max(0, self.journal_sort.findData(previous)))
+        self.journal_sort.blockSignals(False)
+
+    def update_actions(self, *_):
+        key = self.current_course_id
+        valid = key is not None
+        for name, action in self.tools.items():
+            action.setEnabled(valid or name in ("new_course", "restore"))
+        self.tools["restore"].setEnabled(bool(self.service.lifecycle.list_deletions()))
+        if not valid:
+            self.tools["subgroup"].setVisible(False)
+            return
+        course = self.api.get_course(key)
+        self.tools["subgroup"].setVisible(course.kind != "lecture")
+        self.tools["edit_topic"].setEnabled(selected_key(self.topics) is not None)
+        self.tools["schedule"].setEnabled(
+            bool(self.api.list_rosters(key) and self.api.list_topics(key))
+        )
+        selected = self.selected_lesson()
+        lesson = next(
+            (lesson for lesson in self.api.list_lessons(key) if lesson.id == selected), None
+        )
+        selected = lesson.id if lesson else None
+        for name in ("view", "move", "delete"):
+            self.tools[name].setEnabled(selected is not None)
+        self.tools["recurrence"].setEnabled(lesson is not None and lesson.series_id is not None)
+        if lesson is not None:
+            block = self.service.redesign.get_block(lesson.block_id)
+            pairs = [self.service.get_lesson(pair) for pair in block.pair_ids]
+            self.tools["move"].setEnabled(not any(pair.roster_fixed for pair in pairs))
+            self.tools["move"].setToolTip(
+                "Перенести выбранное занятие"
+                if self.tools["move"].isEnabled()
+                else "Занятие с зафиксированной историей нельзя переносить"
+            )
+            self.tools["delete"].setEnabled(not any(pair.state == "open" for pair in pairs))
+            self.tools["delete"].setToolTip(
+                "Удалить выбранное занятие"
+                if self.tools["delete"].isEnabled()
+                else "Сначала завершите регистрацию занятия"
+            )
+        selected_cells = [
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self.journal.selectedItems()
+            if isinstance(item.data(Qt.ItemDataRole.UserRole), tuple)
+            and not self.journal.isRowHidden(item.row())
+        ]
+        scheduled_topics = {lesson.topic_id for lesson in self.api.list_lessons(key)}
+        self.tools["mark"].setEnabled(
+            bool(selected_cells) and all(topic in scheduled_topics for _, topic in selected_cells)
+        )
+        self.tools["mark"].setToolTip(
+            "Подтвердить посещение выделенных ячеек"
+            if self.tools["mark"].isEnabled()
+            else "Выберите ячейки тем, для которых есть занятие в расписании"
+        )
+        self.tools["export"].setEnabled(self.journal.rowCount() > 0)
+
+    def refresh_absences(self, projection):
+        key = self.current_course_id
+        self.missed_topics = {}
+        if key is None:
+            return
+        course = self.api.get_course(key)
+        students = {student.student_id for student in self.api.list_students(key)}
+        expected = {student: set() for student in students}
+        incomplete = False
+        now = datetime.now(UTC)
+        for lesson in self.api.list_lessons(key):
+            block = self.service.redesign.get_block(lesson.block_id)
+            last = self.service.get_lesson(block.pair_ids[-1])
+            if last.ends_at > now:
+                continue
+            if course.kind == "lecture":
+                if last.roster_fixed:
+                    ids = set()
+                    for pair_id in block.pair_ids:
+                        pair = self.service.get_lesson(pair_id)
+                        if pair.roster_fixed:
+                            ids.update(
+                                student.student_id
+                                for student in self.service.redesign.get_pair_contexts(pair_id)
+                            )
+                    if not ids:
+                        incomplete = True
+                else:
+                    ids = students
+            else:
+                ids = {
+                    student.student_id
+                    for student in self.service.redesign.get_pair_contexts(block.pair_ids[0])
+                }
+                if not ids:
+                    incomplete = True
+            for student in ids:
+                if student in expected:
+                    expected[student].add(lesson.topic_id)
+        for student, topics in expected.items():
+            self.missed_topics[student] = {
+                topic for topic in topics if (student, topic) not in projection
+            }
+        self.journal_notice.setVisible(incomplete)
+        self.journal_notice.setText(
+            "У части прошедших занятий не указан состав. Добавьте учебные группы во вкладке «Курс → Состав». До уточнения состава пропуски по этим занятиям не считаются."
+        )
+        self.journal_status.setToolTip(
+            "Пропуски только по прошедшим темам своего состава. "
+            + (
+                "Для некоторых занятий состав неизвестен: они не считаются пропусками."
+                if incomplete
+                else "Будущие темы не учитываются."
+            )
+        )

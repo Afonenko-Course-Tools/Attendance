@@ -4,7 +4,7 @@ from zipfile import ZipFile
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QToolButton
 from test_course_workflow import course  # noqa: F401
 
 from attendance_lab.application.controller import AttendanceController
@@ -34,12 +34,11 @@ def test_java_attendance_journal_exports_without_enabling_assessment(course, tmp
         window.show()
         window.tabs.setCurrentWidget(window.course_journal)
         app.processEvents()
-        assert not window.tabs.isTabVisible(window.tabs.indexOf(window.calculation_pane))
-        assert not window.course_journal.isTabVisible(1)
+        assert window.tabs.isTabVisible(window.tabs.indexOf(window.grading_page))
         button = next(
             b
-            for b in window.course_workspace.journal_pane.findChildren(QPushButton)
-            if b.text() == "Экспорт XLSX…"
+            for b in window.course_workspace.journal_pane.findChildren(QToolButton)
+            if b.text() == "Экспорт"
         )
         assert button.isVisibleTo(window)
         QTest.mouseClick(button, Qt.MouseButton.LeftButton)

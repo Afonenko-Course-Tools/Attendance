@@ -71,7 +71,7 @@ def test_private_inputs_tables_and_popups_override_dark_desktop(light_app):
     window.close()
 
 
-def test_private_dialogs_are_light_and_public_window_keeps_its_background(light_app):
+def test_private_dialogs_and_public_window_use_light_backgrounds(light_app):
     message = QMessageBox()
     file_dialog = QFileDialog()
     public = PublicWindow()
@@ -84,8 +84,8 @@ def test_private_dialogs_are_light_and_public_window_keeps_its_background(light_
         assert widget.palette().color(QPalette.ColorRole.WindowText).name() == "#17243c"
     public_content = public.centralWidget()
     assert public_content is not None
-    assert public_content.palette().color(QPalette.ColorRole.Window).name() == "#10263f"
-    assert public.context.palette().color(QPalette.ColorRole.WindowText).name() == "#b5cde5"
+    assert public_content.palette().color(QPalette.ColorRole.Window).name() == "#f5f8fc"
+    assert public.context.palette().color(QPalette.ColorRole.WindowText).name() == "#425a73"
     public.close()
     message.close()
     file_dialog.close()

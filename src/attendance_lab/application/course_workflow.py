@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from attendance_lab.domain.course_workflow import SemesterCourse
 from attendance_lab.domain.models import AttendanceError
+from attendance_lab.domain.redesign import TeachingRoster
 from attendance_lab.domain.rules import required_text
 
 
@@ -140,6 +141,45 @@ class CourseWorkflow:
                 student_ids or set(),
             )
             self.add_roster(c.id, roster.id)
+            return roster
+
+    def lecture_roster(self, course_id):
+        """Use a single expected stream for new lectures, preserving dated history."""
+        course = self.get_course(course_id)
+        if course.kind != "lecture":
+            raise AttendanceError("Общий поток используется только для лекций.")
+        rosters = self.list_rosters(course_id)
+        if not rosters:
+            raise AttendanceError("Сначала добавьте учебные группы в состав потока.")
+        whole_groups = all(roster.mode == "groups" for roster in rosters)
+        groups = {group for roster in rosters for group in roster.group_ids}
+        students = {student.student_id for student in self.list_students(course_id)}
+        for roster in rosters:
+            if whole_groups:
+                matches = roster.mode == "groups" and set(roster.group_ids) == groups
+            else:
+                matches = (
+                    roster.mode == "students"
+                    and {s.student_id for s in self.api._roster_contexts(roster)} == students
+                )
+            if matches:
+                return roster
+        with self.store.transaction():
+            roster = self.store.rd_save_roster(
+                TeachingRoster(
+                    0,
+                    course.discipline_id,
+                    course.academic_year_id,
+                    course.semester,
+                    "Поток",
+                    course.kind,
+                    course.duration,
+                    "groups" if whole_groups else "students",
+                    tuple(sorted(groups)) if whole_groups else (),
+                    () if whole_groups else tuple(sorted(students)),
+                )
+            )
+            self.add_roster(course_id, roster.id)
             return roster
 
     def list_students(self, course_id):
