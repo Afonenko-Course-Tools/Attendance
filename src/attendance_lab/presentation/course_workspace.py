@@ -40,6 +40,12 @@ from attendance_lab.presentation.lesson_lifecycle import (
     restore_lessons_dialog,
 )
 from attendance_lab.presentation.preparation import FormDialog, checked, choices, combo, spin
+from attendance_lab.presentation.programme_topics import (
+    ProgrammeTopicChoice,
+    build_add_topics_dialog,
+    build_lesson_topic_dialog,
+    build_topic_dialog,
+)
 from attendance_lab.presentation.toolbars import office_toolbar, tool_action, tool_menu
 
 
@@ -81,11 +87,21 @@ class CourseWorkspace(QWidget):
             lambda: self.topic_dialog(False),
         )
         self.tools["edit_topic"] = tool_action(
-            toolbar, "Изменить", QStyle.StandardPixmap.SP_FileDialogDetailedView, self.topic_dialog
+            toolbar,
+            "Изменить название",
+            QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            self.topic_dialog,
         )
         layout.addWidget(toolbar)
+        self.tools["add_topics"] = tool_action(
+            toolbar,
+            "Добавить темы…",
+            QStyle.StandardPixmap.SP_FileDialogNewFolder,
+            self.add_topics_dialog,
+        )
         self.topics = table(["№", "Тема"])
         layout.addWidget(self.topics)
+        self.topics.itemDoubleClicked.connect(lambda *_: self.topic_dialog())
         members = QWidget()
         layout = QVBoxLayout(members)
         toolbar = office_toolbar(self)
@@ -118,6 +134,12 @@ class CourseWorkspace(QWidget):
         )
         self.tools["view"] = tool_action(
             toolbar, "Открыть", QStyle.StandardPixmap.SP_DialogOpenButton, self.view_lesson
+        )
+        self.tools["lesson_topic"] = tool_action(
+            toolbar,
+            "Тема занятия…",
+            QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            self.lesson_topic_dialog,
         )
         self.tools["move"] = tool_action(
             toolbar, "Перенести", QStyle.StandardPixmap.SP_ArrowRight, self.move_dialog
@@ -481,18 +503,19 @@ class CourseWorkspace(QWidget):
         key = self.current_course_id
         if key is None:
             return
-        d = FormDialog("Тема программы курса", self)
-        number = spin(1, 999, len(self.api.list_topics(key)) + 1)
-        title = QLineEdit()
-        row = self.topics.currentRow()
-        if edit and row >= 0:
-            number_item, title_item = self.topics.item(row, 0), self.topics.item(row, 1)
-            assert number_item is not None and title_item is not None
-            number.setValue(int(number_item.text()))
-            title.setText(title_item.text())
-        d.form.addRow("Номер", number)
-        d.form.addRow("Общая тема", title)
-        self.run(d, lambda: self.api.save_topic(key, number.value(), title.text()))
+        result = build_topic_dialog(self, self.api, key, selected_key(self.topics), edit=edit)
+        if result is not None:
+            self.run(*result)
+
+    def add_topics_dialog(self):
+        key = self.current_course_id
+        if key is not None:
+            self.run(*build_add_topics_dialog(self, self.api, key))
+
+    def lesson_topic_dialog(self):
+        key = self.selected_lesson()
+        if key is not None:
+            self.run(*build_lesson_topic_dialog(self, self.service, key))
 
     def groups_dialog(self, partial=False):
         key = self.current_course_id
@@ -566,11 +589,11 @@ class CourseWorkspace(QWidget):
             )
         )
         roster = combo([(r.name, r.id) for r in self.api.list_rosters(key)])
-        topic = combo([(f"{t.number}. {t.title}", t.number) for t in self.api.list_topics(key)])
+        topic = ProgrammeTopicChoice(self.api, key, selected_topic_id=selected_key(self.topics))
         lecture = course.kind == "lecture"
         if not lecture:
             d.form.addRow("Состав", roster)
-        d.form.addRow("Первая тема", topic)
+        d.form.addRow("Тема / первая тема серии", topic)
         on, slot = self.date_slot(d)
         interval = combo([("Одно занятие", 0), ("Каждые 7 дней", 7), ("Каждые 14 дней", 14)])
         count = spin(1, 100, 1)
@@ -578,29 +601,21 @@ class CourseWorkspace(QWidget):
         interval.currentIndexChanged.connect(lambda: count.setEnabled(bool(interval.currentData())))
         room = QLineEdit()
         d.form.addRow("Повторение", interval)
+        count.setToolTip("Для серии заранее добавьте следующие темы в программу курса.")
         d.form.addRow("Занятий подряд по программе", count)
         d.form.addRow("Аудитория", room)
 
         def save():
-            args = (key, self.api.lecture_roster(key).id if lecture else roster.currentData())
-            if interval.currentData():
-                self.api.schedule_series(
-                    *args,
-                    on.date().toPython(),
-                    slot.currentData(),
-                    interval.currentData(),
-                    topic.currentData(),
-                    count.value(),
-                    room.text(),
-                )
-            else:
-                self.api.schedule(
-                    *args,
-                    topic.currentData(),
-                    on.date().toPython(),
-                    slot.currentData(),
-                    room.text(),
-                )
+            return self.api.schedule_with_topic(
+                key,
+                None if lecture else roster.currentData(),
+                on.date().toPython(),
+                slot.currentData(),
+                interval_days=interval.currentData(),
+                count=count.value(),
+                room=room.text(),
+                **topic.selection(),
+            )
 
         self.run(d, save)
 
@@ -839,12 +854,9 @@ class CourseWorkspace(QWidget):
         self.tools["edit_topic"].setEnabled(selected_key(self.topics) is not None)
         self.tools["schedule"].setEnabled(
             bool(
-                self.api.list_topics(key)
-                and (
-                    self.api.list_students(key)
-                    if course.kind == "lecture"
-                    else self.api.list_rosters(key)
-                )
+                self.api.list_students(key)
+                if course.kind == "lecture"
+                else self.api.list_rosters(key)
             )
         )
         selected = self.selected_lesson()
@@ -852,7 +864,7 @@ class CourseWorkspace(QWidget):
             (lesson for lesson in self.api.list_lessons(key) if lesson.id == selected), None
         )
         selected = lesson.id if lesson else None
-        for name in ("view", "move", "delete"):
+        for name in ("view", "move", "delete", "lesson_topic"):
             self.tools[name].setEnabled(selected is not None)
         self.tools["recurrence"].setEnabled(lesson is not None and lesson.series_id is not None)
         if lesson is not None:

@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSlider,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
@@ -40,6 +39,8 @@ from attendance_lab.domain.grading import (
 )
 from attendance_lab.domain.models import AttendanceError
 from attendance_lab.presentation.common import guarded, selected_key
+from attendance_lab.presentation.report_criteria import ReportCriteriaPanel
+from attendance_lab.presentation.report_topic_picker import ReportTopicPicker
 from attendance_lab.presentation.toolbars import office_toolbar, tool_action
 
 
@@ -52,12 +53,11 @@ class ReportCardDialog(QDialog):
             (s for s in workflow.students(course_id) if s.student_id == student_id), None
         )
         self.setWindowTitle("Доклад — " + (student.full_name if student else "карточка оценивания"))
-        self.resize(750, 700)
+        available = self.screen().availableGeometry()
+        self.resize(min(920, available.width() - 40), min(820, available.height() - 60))
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        self.topic = QComboBox()
-        self.topic.setEditable(True)
-        self.topic.addItems(workflow.report_topics(course_id))
+        self.topic = ReportTopicPicker(workflow.report_topic_catalog(course_id))
         self.lesson = QComboBox()
         for key, label in workflow.lessons(course_id):
             self.lesson.addItem(label, key)
@@ -75,36 +75,19 @@ class ReportCardDialog(QDialog):
         self.lesson.setCurrentIndex(self.lesson.findData(lesson_id))
         self.lesson.setEnabled(card is None)
         change = QPushButton("Изменить занятие сдачи…")
+        change.setVisible(card is not None)
         change.clicked.connect(lambda: self.lesson.setEnabled(True))
-        form.addRow("Тема (из списка или своя)", self.topic)
+        form.addRow("Тема реферата", self.topic)
         form.addRow("Занятие сдачи", self.lesson)
         form.addRow("", change)
         form.addRow("", self.written)
         layout.addLayout(form)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        body = QWidget()
-        questions = QFormLayout(body)
-        self.sliders = []
-        self.level_labels = []
-        for index, criterion in enumerate(CRITERIA):
-            slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setRange(0, criterion.steps - 1)
-            slider.setTickInterval(1)
-            slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-            slider.setAccessibleName(criterion.title)
-            slider.setValue(card.levels[index] if card else criterion.steps // 2)
-            label = QLabel()
-            line = QHBoxLayout()
-            line.addWidget(slider, 1)
-            line.addWidget(label)
-            questions.addRow(criterion.title, line)
-            slider.installEventFilter(self)
-            self.sliders.append(slider)
-            self.level_labels.append(label)
-            slider.valueChanged.connect(self.update_preview)
-        scroll.setWidget(body)
-        layout.addWidget(scroll, 1)
+        self.criteria = ReportCriteriaPanel(
+            card.levels if card else None, card.written if card else False
+        )
+        self.sliders = self.criteria.controls
+        self.criteria.levelsChanged.connect(self.update_preview)
+        layout.addWidget(self.criteria, 1)
         self.preview = QLabel()
         layout.addWidget(self.preview)
         self.error = QLabel()
@@ -122,28 +105,8 @@ class ReportCardDialog(QDialog):
         self.written.toggled.connect(self.update_preview)
         self.update_preview()
 
-    def eventFilter(self, watched, event):
-        if event.type() == QEvent.Type.KeyPress and watched in self.sliders:
-            if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
-                direction = -1 if event.key() == Qt.Key.Key_Up else 1
-                index = self.sliders.index(watched) + direction
-                while 0 <= index < len(self.sliders):
-                    if self.sliders[index].isEnabled():
-                        self.sliders[index].setFocus()
-                        break
-                    index += direction
-                return True
-        return super().eventFilter(watched, event)
-
     def update_preview(self, *_):
-        for criterion, slider, label in zip(CRITERIA, self.sliders, self.level_labels, strict=True):
-            slider.setEnabled(not criterion.written or self.written.isChecked())
-            labels = (
-                ("Хуже", "Нейтрально", "Лучше")
-                if criterion.steps == 3
-                else ("Значительно хуже", "Хуже", "Нейтрально", "Лучше", "Значительно лучше")
-            )
-            label.setText(labels[slider.value()])
+        self.criteria.set_written(self.written.isChecked())
         temporary = ReportCard(
             self.course_id,
             self.student_id,

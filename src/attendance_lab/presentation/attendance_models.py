@@ -2,131 +2,35 @@
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
 
+from attendance_lab.application.text_search import TextSearch
+from attendance_lab.application.text_search import normalized as normalized
+
 IDENTITY = Qt.ItemDataRole.UserRole
 PAIR = int(Qt.ItemDataRole.UserRole) + 1
 SORT = int(Qt.ItemDataRole.UserRole) + 2
-
-
-def normalized(value):
-    return str(value).casefold().replace("ё", "е")
 
 
 class StudentSearch:
     def __init__(self, students):
         self.whole_block = False
         self.students = list(students)
-        self.entries = [
-            (
-                s,
-                tuple(
-                    normalized(
-                        " ".join(
-                            str(getattr(s, key, "") or "")
-                            for key in (
-                                "full_name",
-                                "record_book_number",
-                                "group_number",
-                                "specialty",
-                                "profile",
-                            )
-                        )
-                    ).split()
-                ),
-            )
-            for s in self.students
-        ]
-        # Names and catalog labels repeat across students. Score each distinct
-        # token once per query, without consulting storage during typing.
-        self.tokens = frozenset(token for _, tokens in self.entries for token in tokens)
-        self.deletion_index = {}
-        for token in self.tokens:
-            if token.isdecimal() or len(token) > 40:
-                continue
-            for deletion in self.deletions(token):
-                self.deletion_index.setdefault(deletion, set()).add(token)
-        self.query_cache = {}
-
-    @staticmethod
-    def deletions(word):
-        """Candidate lookup for at most two edits, built once for the roster."""
-        found, level = {word}, {word}
-        for _ in range(2):
-            level = {text[:i] + text[i + 1 :] for text in level for i in range(len(text))}
-            found.update(level)
-        return found
-
-    def word_scores(self, word):
-        scores = {token: 1.0 for token in self.tokens if word in token}
-        if len(word) < 3 or word.isdecimal() or len(word) > 40:
-            return scores
-        candidates = set()
-        for deletion in self.deletions(word):
-            candidates.update(self.deletion_index.get(deletion, ()))
-        for token in candidates - scores.keys():
-            score = self.token_score(word, token)
-            if score:
-                scores[token] = score
-        return scores
-
-    @staticmethod
-    def token_score(word, token):
-        if word in token:
-            return 1.0
-        if len(word) < 3:
-            return 0.0
-        limit = min(2, int(max(len(word), len(token)) * 0.32))
-        if abs(len(word) - len(token)) > limit:
-            return 0.0
-        # Bounded Damerau-Levenshtein recognizes the adjacent transpositions
-        # common when typing a name from speech. Length and row cutoffs avoid
-        # the quadratic, allocation-heavy general-purpose sequence matcher.
-        previous = list(range(len(token) + 1))
-        before_previous = None
-        for i, left in enumerate(word, 1):
-            current = [i]
-            for j, right in enumerate(token, 1):
-                distance = min(
-                    current[j - 1] + 1,
-                    previous[j] + 1,
-                    previous[j - 1] + (left != right),
+        self.index = TextSearch(
+            self.students,
+            text=lambda student: " ".join(
+                str(getattr(student, key, "") or "")
+                for key in (
+                    "full_name",
+                    "record_book_number",
+                    "group_number",
+                    "specialty",
+                    "profile",
                 )
-                if (
-                    before_previous is not None
-                    and j > 1
-                    and left == token[j - 2]
-                    and word[i - 2] == right
-                ):
-                    distance = min(distance, before_previous[j - 2] + 1)
-                current.append(distance)
-            if min(current) > limit:
-                return 0.0
-            before_previous, previous = previous, current
-        distance = previous[-1]
-        return 1.0 - distance / max(len(word), len(token)) if distance <= limit else 0.0
+            ),
+            order=lambda student: student.full_name,
+        )
 
     def find(self, query):
-        query = " ".join(normalized(query).split())
-        if query in self.query_cache:
-            return list(self.query_cache[query])
-        words = query.split()
-        if not words:
-            return sorted(self.students, key=lambda student: student.full_name)
-        scores = {word: self.word_scores(word) for word in set(words)}
-        ranked = []
-        for student, tokens in self.entries:
-            parts = [
-                max((scores[word].get(token, 0) for token in tokens), default=0) for word in words
-            ]
-            score = sum(parts)
-            if all(parts) and score / len(words) >= 0.68:
-                ranked.append((score, student))
-        result = [
-            student for _, student in sorted(ranked, key=lambda item: (-item[0], item[1].full_name))
-        ]
-        if len(self.query_cache) >= 128:
-            self.query_cache.pop(next(iter(self.query_cache)))
-        self.query_cache[query] = tuple(result)
-        return result
+        return self.index.find(query)
 
 
 class StudentModel(QAbstractTableModel):

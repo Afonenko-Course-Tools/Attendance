@@ -10,6 +10,7 @@ from attendance_lab.domain.course_workflow import (
     CourseTopic,
     SemesterCourse,
 )
+from attendance_lab.domain.models import AttendanceError
 
 COURSE_SCHEMA = """
 CREATE TABLE semester_courses (
@@ -132,6 +133,23 @@ class CourseSQLiteMixin:
             (course_id, topic_id, block_id, series_id, sequence_index),
         ).lastrowid
         return next(x for x in self.cw_lessons(course_id) if x.id == key)
+
+    def cw_set_lesson_topic(self, course_id, lesson_id, topic_id, title):
+        cursor = self._rd_execute(
+            "UPDATE course_lessons SET topic_id=? WHERE id=? AND course_id=?",
+            (topic_id, lesson_id, course_id),
+        )
+        if cursor.rowcount != 1:
+            raise AttendanceError("Занятие курса не найдено.")
+        self._rd_execute(
+            "UPDATE scheduled_blocks SET title=? WHERE id=(SELECT block_id FROM course_lessons WHERE id=?)",
+            (title, lesson_id),
+        )
+        self._rd_execute(
+            "UPDATE lessons SET title=? WHERE id IN (SELECT bl.lesson_id FROM block_lessons bl JOIN course_lessons cl ON cl.block_id=bl.block_id WHERE cl.id=?)",
+            (title, lesson_id),
+        )
+        return next(lesson for lesson in self.cw_lessons(course_id) if lesson.id == lesson_id)
 
     def cw_series(self, course_id):
         return [

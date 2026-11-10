@@ -192,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     from attendance_lab.application.service import AttendanceService
     from attendance_lab.infrastructure.csv_io import CsvFiles
     from attendance_lab.infrastructure.readers import DemoReader, PCSCReader
+    from attendance_lab.infrastructure.report_topic_catalog import load_report_topic_catalogs
     from attendance_lab.infrastructure.sqlite import SQLiteRepository
     from attendance_lab.presentation.admin import MainWindow
     from attendance_lab.presentation.theme import apply_light_theme
@@ -219,7 +220,8 @@ def main(argv: list[str] | None = None) -> int:
     controller = None
     try:
         service = AttendanceService(
-            SQLiteRepository(database, mode="demo" if args.demo else "real")
+            SQLiteRepository(database, mode="demo" if args.demo else "real"),
+            report_topic_catalogs=load_report_topic_catalogs(),
         )
         controller = AttendanceController(service, DemoReader if args.demo else PCSCReader)
         recovered = service.recover_interrupted()

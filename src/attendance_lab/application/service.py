@@ -35,11 +35,18 @@ if TYPE_CHECKING:
     from attendance_lab.application.course_workflow import CourseWorkflow
     from attendance_lab.application.grading import GradingService
     from attendance_lab.application.redesign import RedesignService
+    from attendance_lab.application.report_topics import ReportTopicCatalog
 
 
 class AttendanceService:
-    def __init__(self, repository: AttendanceRepository) -> None:
+    def __init__(
+        self,
+        repository: AttendanceRepository,
+        *,
+        report_topic_catalogs: tuple[ReportTopicCatalog, ...] = (),
+    ) -> None:
         self.repository = repository
+        self.report_topic_catalogs = report_topic_catalogs
         self._lifecycle_service = None
         self._redesign_service: RedesignService | None = None
         self._course_service: CourseWorkflow | None = None

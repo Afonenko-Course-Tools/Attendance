@@ -86,6 +86,92 @@ class CourseWorkflow:
             self.store.cw_sync_topic_title(topic.id, topic.title)
             return topic
 
+    def add_topic(self, course_id, number, title):
+        """Add a programme topic without silently replacing another number."""
+        if type(number) is not int or number < 1:
+            raise AttendanceError("Номер темы должен быть положительным целым числом.")
+        with self.store.transaction():
+            if any(topic.number == number for topic in self.list_topics(course_id)):
+                raise AttendanceError(
+                    "Этот номер уже есть в программе. Выберите другой номер или измените название существующей темы."
+                )
+            return self.save_topic(course_id, number, title)
+
+    def add_topics(self, course_id, first_number, count):
+        """Add programme placeholders only; no lesson or evidence is created."""
+        if (
+            type(first_number) is not int
+            or first_number < 1
+            or type(count) is not int
+            or not 1 <= count <= 1000
+        ):
+            raise AttendanceError(
+                "Укажите положительный начальный номер и от 1 до 1000 новых тем за один раз."
+            )
+        with self.store.transaction():
+            return [
+                self.add_topic(course_id, number, f"Тема {number}")
+                for number in range(first_number, first_number + count)
+            ]
+
+    def _resolve_topic(self, course_id, topic_id=None, new_topic_number=None, new_topic_title=""):
+        if topic_id is None:
+            return self.add_topic(course_id, new_topic_number, new_topic_title)
+        topic = next((topic for topic in self.list_topics(course_id) if topic.id == topic_id), None)
+        if topic is None:
+            raise AttendanceError("Выберите тему программы того же курса.")
+        return topic
+
+    def change_lesson_topic(
+        self, lesson_id, topic_id=None, *, new_topic_number=None, new_topic_title=""
+    ):
+        """Correct one occurrence's programme topic, preserving all original facts."""
+        with self.store.transaction():
+            lesson = self.get_lesson(lesson_id)
+            topic = self._resolve_topic(
+                lesson.course_id, topic_id, new_topic_number, new_topic_title
+            )
+            return self.store.cw_set_lesson_topic(
+                lesson.course_id, lesson.id, topic.id, topic.title
+            )
+
+    def schedule_with_topic(
+        self,
+        course_id,
+        roster_id,
+        on_date,
+        start_slot,
+        *,
+        topic_id=None,
+        new_topic_number=None,
+        new_topic_title="",
+        interval_days=0,
+        count=1,
+        room="",
+        timezone="Europe/Minsk",
+    ):
+        """Save the chosen/new topic, optional stream and schedule atomically."""
+        with self.store.transaction():
+            course = self.get_course(course_id)
+            topic = self._resolve_topic(course.id, topic_id, new_topic_number, new_topic_title)
+            if course.kind == "lecture" and roster_id is None:
+                roster_id = self.lecture_roster(course.id).id
+            if interval_days:
+                return self.schedule_series(
+                    course.id,
+                    roster_id,
+                    on_date,
+                    start_slot,
+                    interval_days,
+                    topic.number,
+                    count,
+                    room,
+                    timezone,
+                )
+            return self.schedule(
+                course.id, roster_id, topic.number, on_date, start_slot, room, timezone
+            )
+
     def list_rosters(self, course_id):
         ids = self.store.cw_rosters(course_id)
         return [r for r in self.api.list_rosters() if r.id in ids]

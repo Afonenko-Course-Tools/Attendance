@@ -3,6 +3,7 @@
 from dataclasses import replace
 from math import isfinite
 
+from attendance_lab.application.report_topics import ReportTopic
 from attendance_lab.domain.grading import (
     WrittenWork,
     calculate,
@@ -44,10 +45,22 @@ class GradingService:
         return self.store.gr_course(course_id)[1]
 
     def report_topics(self, course_id):
-        return sorted(
-            {r.topic for r in self.store.gr_reports(course_id)}
-            | {topic.title for topic in self.service.courses.list_topics(course_id)}
+        return [topic.title for topic in self.report_topic_catalog(course_id)]
+
+    def report_topic_catalog(self, course_id):
+        course = self.service.courses.get_course(course_id)
+        discipline = next(
+            discipline
+            for discipline in self.service.list_disciplines()
+            if discipline.id == course.discipline_id
         )
+        topics = {}
+        for catalog in self.service.report_topic_catalogs:
+            if name_key(discipline.name) in {name_key(name) for name in catalog.discipline_names}:
+                topics.update((name_key(topic.title), topic) for topic in catalog.topics)
+        for report in sorted(self.store.gr_reports(course_id), key=lambda report: report.topic):
+            topics.setdefault(name_key(report.topic), ReportTopic(report.topic))
+        return tuple(topics.values())
 
     def save_report(self, card):
         with self.store.transaction():
