@@ -64,6 +64,9 @@ def test_cell_marks_whole_lesson_without_dialog_or_switching_registration(
         assert "Пропуск" in pane.journal.item(0, 5).toolTip()
         assert not service.redesign.list_manual_batches(), "Выделение само по себе не пишет данные"
         if action == "button":
+            assert pane.journal_reason.currentText() == "был без пропуска"
+            assert not pane.journal_reason.isEditable()
+            pane.journal_reason.setCurrentIndex(1)
             pane.tools["mark"].trigger()
         elif action == "double_click":
             rectangle = pane.journal.visualItemRect(pane.journal.item(0, 5))
@@ -80,6 +83,9 @@ def test_cell_marks_whole_lesson_without_dialog_or_switching_registration(
             )
         app.processEvents()
         assert len(service.redesign.list_manual_batches()) == 1
+        assert service.redesign.list_manual_batches()[0].reason == (
+            "отработал с другой группой" if action == "button" else "был без пропуска"
+        )
         for pair_id in target_block.pair_ids:
             assert {
                 evidence.student_id

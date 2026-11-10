@@ -34,6 +34,7 @@ from attendance_lab.presentation.attendance_models import (
     StudentProxy,
     StudentSearch,
 )
+from attendance_lab.presentation.attendance_reasons import MANUAL_REASONS
 from attendance_lab.presentation.common import (
     guarded,
     plain_label,
@@ -1062,10 +1063,13 @@ class LessonWorkspace(QWidget):
             return
         targets = {(student, pair) for student in ids for pair in pairs}
         names = "\n".join(s.full_name for s in self.cache.students if s.student_id in ids)
-        reason, ok = QInputDialog.getText(
+        reason, ok = QInputDialog.getItem(
             self,
             "Ручная отметка выбранных",
             f"{self.blocks.currentText()}\n{names}\nСтудентов: {len(ids)} · посещение всего занятия\nПричина:",
+            MANUAL_REASONS,
+            0,
+            False,
         )
         if ok:
             guarded(

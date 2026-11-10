@@ -144,9 +144,10 @@ def test_manual_toolbar_requires_explicit_student_and_saves_that_selection(lectu
 
     def reason(*args):
         prompts.append(args[2])
-        return "Подтверждение преподавателя", True
+        assert args[3:] == (("был без пропуска", "отработал с другой группой"), 0, False)
+        return args[3][0], True
 
-    monkeypatch.setattr(QInputDialog, "getText", reason)
+    monkeypatch.setattr(QInputDialog, "getItem", reason)
     widget.manual_button.click()
     widget.manual_block()
     assert not prompts and not service.redesign.list_manual_batches()
@@ -172,7 +173,7 @@ def test_explicit_search_result_can_be_marked_without_a_card(lecture, monkeypatc
     widget.matches.setCurrentRow(0)
     selected = widget.manual_target_ids()
     assert len(selected) == 1 and widget.manual_button.isEnabled()
-    monkeypatch.setattr(QInputDialog, "getText", lambda *args: ("Без карты", True))
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: ("Без карты", True))
     widget.manual_button.click()
     assert {
         evidence.student_id
@@ -200,7 +201,7 @@ def test_table_selection_overrides_an_older_search_candidate(lecture, monkeypatc
             break
     table_ids = widget.selected_ids()
     assert table_ids and table_ids != search_ids
-    monkeypatch.setattr(QInputDialog, "getText", lambda *args: ("Выбран в таблице", True))
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: ("Выбран в таблице", True))
     getattr(widget, button).click()
     assert {
         evidence.student_id
@@ -285,7 +286,7 @@ def test_future_closed_manual_actions_require_registration_and_recheck_draft(lec
     def unexpected_dialog(*args):
         pytest.fail("Будущее закрытое занятие не должно открывать форму сохранения отметки")
 
-    monkeypatch.setattr(QInputDialog, "getText", unexpected_dialog)
+    monkeypatch.setattr(QInputDialog, "getItem", unexpected_dialog)
     widget.start_manual()
     widget.manual_block()
     assert not widget.manual_mode and not service.redesign.list_manual_batches()

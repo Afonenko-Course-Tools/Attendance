@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QLabel,
-    QLineEdit,
     QWidget,
 )
 
@@ -112,11 +111,16 @@ def test_multiple_instances_require_explicit_id_and_show_person_date_time_line(
         index = control.findData(second.id)
         assert "15.09.2026 12:00–15:10" in control.itemText(index)
         assert roster.name in control.itemText(index)
-        reason = dialog.findChild(QLineEdit, "JournalMarkReason")
-        assert reason.text() == DEFAULT_REASON
+        reason = dialog.findChild(QComboBox, "JournalMarkReason")
+        assert reason.currentText() == DEFAULT_REASON
+        assert not reason.isEditable()
+        assert [reason.itemText(i) for i in range(reason.count())] == [
+            "был без пропуска",
+            "отработал с другой группой",
+        ]
         control.setCurrentIndex(index)
         assert save.isEnabled()
-        reason.setText("Подтверждение после проверки журнала")
+        reason.setCurrentIndex(1)
         return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(FormDialog, "exec", choose)
@@ -131,9 +135,7 @@ def test_multiple_instances_require_explicit_id_and_show_person_date_time_line(
     assert manual_students(service, service.redesign.get_block(second.block_id)) == {
         student.student_id
     }
-    assert (
-        service.redesign.list_manual_batches()[0].reason == "Подтверждение после проверки журнала"
-    )
+    assert service.redesign.list_manual_batches()[0].reason == "отработал с другой группой"
     assert changed == [True] and not messages
 
 

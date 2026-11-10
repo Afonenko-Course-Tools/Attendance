@@ -157,7 +157,7 @@ def test_manual_actions_also_work_for_the_current_standalone_lesson(window, monk
             workspace.confirm_match()
         else:
             monkeypatch.setattr(
-                QInputDialog, "getText", lambda *args: ("Пропуск не работает", True)
+                QInputDialog, "getItem", lambda *args: ("Пропуск не работает", True)
             )
             workspace.table.selectRow(0)
             workspace.manual_block()

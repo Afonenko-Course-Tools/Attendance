@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from attendance_lab.application.course_absences import course_absences
 from attendance_lab.application.redesign import SLOTS
+from attendance_lab.presentation.attendance_reasons import MANUAL_REASONS
 from attendance_lab.presentation.common import (
     fill_table,
     guarded,
@@ -178,6 +179,10 @@ class CourseWorkspace(QWidget):
             self.mark_rectangle,
             "Поставить посещение в выбранной ячейке · Enter или Пробел",
         )
+        self.journal_reason = combo([(reason, reason) for reason in MANUAL_REASONS])
+        self.journal_reason.setAccessibleName("Причина ручной отметки")
+        self.journal_reason.setToolTip("Причина ручной отметки в выбранных ячейках")
+        toolbar.addWidget(self.journal_reason)
         self.tools["export"] = tool_action(
             toolbar,
             "Экспорт",
@@ -681,7 +686,14 @@ class CourseWorkspace(QWidget):
             return
         guarded(
             self,
-            lambda: mark_journal_cells(self, self.service, key, selected, self.evidence_changed),
+            lambda: mark_journal_cells(
+                self,
+                self.service,
+                key,
+                selected,
+                self.evidence_changed,
+                reason=self.journal_reason.currentText(),
+            ),
         )
         self.update_actions()
 
