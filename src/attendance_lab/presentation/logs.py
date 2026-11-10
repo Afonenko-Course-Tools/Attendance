@@ -20,7 +20,6 @@ from attendance_lab.application.files import CsvPort
 from attendance_lab.application.service import AttendanceService
 from attendance_lab.domain.models import Lesson, LogRow, PublicResult
 from attendance_lab.presentation.common import (
-    actions,
     fill_table,
     guarded,
     local_time,
@@ -29,6 +28,7 @@ from attendance_lab.presentation.common import (
     table,
 )
 from attendance_lab.presentation.dialogs import ExportOptionsDialog
+from attendance_lab.presentation.toolbars import office_toolbar, tool_action
 
 
 class _FeedbackDelegate(QStyledItemDelegate):
@@ -90,14 +90,35 @@ class LogsWindow(QMainWindow):
         )
         self.log_table.setItemDelegate(_FeedbackDelegate(self.log_table))
         layout.addWidget(self.log_table, 1)
-        layout.addLayout(
-            actions(
-                ("Сопоставить выбранную карту", lambda: self._bind(False)),
-                ("Исправить привязку…", lambda: self._bind(True)),
-                ("Экспорт приватного журнала CSV…", self.export),
-            )
+        toolbar = office_toolbar(self)
+        self.bind_action = tool_action(
+            toolbar,
+            "Привязать карту",
+            QStyle.StandardPixmap.SP_DialogApplyButton,
+            lambda: self._bind(False),
         )
+        self.correct_action = tool_action(
+            toolbar,
+            "Исправить привязку",
+            QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            lambda: self._bind(True),
+        )
+        self.export_action = tool_action(
+            toolbar,
+            "Экспорт CSV",
+            QStyle.StandardPixmap.SP_DialogSaveButton,
+            self.export,
+        )
+        layout.addWidget(toolbar)
+        self.log_table.itemSelectionChanged.connect(self.update_actions)
+        self.update_actions()
         self.setCentralWidget(central)
+
+    def update_actions(self) -> None:
+        selected = selected_key(self.log_table)
+        self.bind_action.setEnabled(self.lesson is not None and selected is not None)
+        self.correct_action.setEnabled(self.lesson is not None and selected is not None)
+        self.export_action.setEnabled(self.lesson is not None and bool(self.rows))
 
     def _bind(self, correction: bool) -> None:
         uid = selected_key(self.log_table)
@@ -111,7 +132,8 @@ class LogsWindow(QMainWindow):
         if lesson is None:
             self._last_scan = None
         self.context.setText("Просматриваемый журнал: " + (label or "занятие не выбрано"))
-        self.active.setText("Активная регистрация: " + (active_label or "закрыта"))
+        self.active.setText("Регистрация: " + active_label)
+        self.active.setVisible(bool(active_label))
         self.reader_state.setText("Считыватель: " + reader_status)
         self.refresh()
 
@@ -145,6 +167,7 @@ class LogsWindow(QMainWindow):
         else:
             self.counts.clear()
         self._apply_feedback()
+        self.update_actions()
 
     def show_scan(self, lesson_id: int, uid: str, result: PublicResult) -> None:
         """Highlight the latest committed attempt, without adding a log row."""

@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QItemSelectionModel, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -78,23 +78,46 @@ def fill_table(
     widget: QTableWidget, rows: Iterable[Sequence[object]], keys: Iterable[object]
 ) -> None:
     selected = selected_key(widget)
+    by_cell = widget.selectionBehavior() == QAbstractItemView.SelectionBehavior.SelectItems
+    selected_cells = set()
+    for index in widget.selectedIndexes():
+        identity = widget.item(index.row(), 0)
+        if identity is not None:
+            selected_cells.add((identity.data(Qt.ItemDataRole.UserRole), index.column()))
+    current_column = widget.currentColumn()
     records = list(rows)
     row_keys = list(keys)
     widget.setSortingEnabled(False)
+    widget.clearSelection()
+    widget.setCurrentCell(-1, -1)
     widget.setRowCount(len(records))
     for row_index, (values, key) in enumerate(zip(records, row_keys, strict=True)):
         for column, value in enumerate(values):
             item = QTableWidgetItem(str(value))
             item.setData(Qt.ItemDataRole.UserRole, key)
             widget.setItem(row_index, column, item)
-        if key == selected:
+        if by_cell:
+            for column in range(len(values)):
+                if (key, column) in selected_cells:
+                    item = widget.item(row_index, column)
+                    assert item is not None
+                    item.setSelected(True)
+                    if key == selected and column == current_column:
+                        widget.setCurrentCell(
+                            row_index, column, QItemSelectionModel.SelectionFlag.NoUpdate
+                        )
+        elif key == selected:
             widget.selectRow(row_index)
     widget.resizeColumnsToContents()
 
 
 def selected_key(widget: QTableWidget) -> object | None:
-    row = widget.currentRow()
-    item = widget.item(row, 0) if row >= 0 else None
+    selected = widget.selectedIndexes()
+    if not selected:
+        return None
+    current = widget.currentRow()
+    row = current if any(index.row() == current for index in selected) else selected[0].row()
+    item = widget.item(row, 0)
     return item.data(Qt.ItemDataRole.UserRole) if item else None
 
 
@@ -122,17 +145,17 @@ def lesson_label(lesson: Lesson, discipline_name: str = "") -> str:
 STYLE = """
 QMainWindow, QDialog { background: #f3f6fa; color: #17243c; }
 QWidget { font-size: 13px; }
-QLabel#Heading { font-size: 25px; font-weight: 700; color: #17243c; }
+QLabel#Heading { font-size: 19px; font-weight: 700; color: #17243c; }
 QLabel#Muted { color: #62718a; }
-QLabel#ActiveBanner { background: #e6f2ec; color: #164c36; padding: 12px; border-radius: 7px; font-weight: 600; }
+QLabel#ActiveBanner { background: #e6f2ec; color: #164c36; padding: 7px; border-radius: 4px; font-weight: 600; }
 QTabWidget::pane { background: white; border: 1px solid #dbe2ed; border-radius: 7px; }
-QTabBar::tab { padding: 11px 18px; background: #e7ecf4; color: #384b67; }
+QTabBar::tab { padding: 8px 16px; background: #e7ecf4; color: #384b67; }
 QTabBar::tab:selected { background: white; color: #1455a0; font-weight: 600; }
 QPushButton { background: #fff; color: #234667; border: 1px solid #c8d3e2; border-radius: 5px; padding: 7px 12px; }
-QPushButton:hover { background: #e8f0fa; border-color: #90abc9; }
-QPushButton:pressed { background: #d8e7f8; }
+QPushButton:enabled:hover { background: #e8f0fa; border-color: #90abc9; }
+QPushButton:enabled:pressed { background: #d8e7f8; }
 QPushButton:disabled { color: #9ba6b4; background: #f1f3f6; }
-QPushButton#Primary { background: #1768b8; color: white; border-color: #1768b8; font-weight: 600; }
+QPushButton#Primary:enabled { background: #1768b8; color: white; border-color: #1768b8; font-weight: 600; }
 QLineEdit, QComboBox, QSpinBox, QDateEdit, QDateTimeEdit, QTextEdit { background: white; color: #17243c; selection-background-color: #1768b8; selection-color: white; border: 1px solid #cbd5e2; border-radius: 4px; padding: 5px; }
 QComboBox QAbstractItemView { background: white; color: #17243c; selection-background-color: #deebfa; selection-color: #142f53; }
 QTableWidget, QListWidget { background: white; color: #17243c; alternate-background-color: #f5f8fc; gridline-color: #e8edf4; border: 1px solid #dbe2ed; }
@@ -140,6 +163,11 @@ QTableWidget::item:selected, QListWidget::item:selected { background: #deebfa; c
 QHeaderView::section { background: #eef3f9; border: 0; border-bottom: 1px solid #d6e0ed; padding: 8px; font-weight: 600; color: #344b69; }
 QGroupBox { border: 1px solid #dbe2ed; border-radius: 6px; margin-top: 14px; padding: 12px; }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }
+QToolBar { background: transparent; border: 0; spacing: 4px; padding: 2px 0; }
+QToolButton { border: 1px solid transparent; border-radius: 3px; padding: 5px 8px; color: #344054; }
+QToolButton:enabled:hover { background: #eef2f6; border-color: #d0d5dd; }
+QToolButton:enabled:pressed, QToolButton:checked { background: #e4eaf1; border-color: #bcc8d7; }
+QToolButton:disabled { color: #98a2b3; background: transparent; border-color: transparent; }
 QMenu { background: white; color: #17243c; border: 1px solid #cbd5e2; }
 QMenu::item:selected { background: #deebfa; color: #142f53; }
 QToolTip { background: #fff9db; color: #17243c; border: 1px solid #cbd5e2; }

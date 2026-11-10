@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from attendance_lab.presentation.attendance_models import IDENTITY, PAIR, SORT, StudentProxy
+from attendance_lab.presentation.attendance_reasons import MANUAL_REASONS
 from attendance_lab.presentation.common import actions, guarded, plain_label
 from attendance_lab.presentation.preparation import FormDialog, checked, choices
 from attendance_lab.presentation.sorting import sort_dialog
@@ -286,10 +287,13 @@ class HistoryPane(QWidget):
             f"{names[s]} · {pairs[p].starts_at:%d.%m.%Y %H:%M} · пара #{p}"
             for s, p in sorted(targets)
         )
-        reason, ok = QInputDialog.getMultiLineText(
+        reason, ok = QInputDialog.getItem(
             self,
             "Проверка точных получателей",
             f"{preview}\n\nОтметок: {len(targets)}. Укажите причину:",
+            MANUAL_REASONS,
+            0,
+            False,
         )
         if ok:
             guarded(

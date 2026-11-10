@@ -7,6 +7,13 @@ from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
 from attendance_lab.domain.models import PublicResult
 from attendance_lab.presentation.common import plain_label
 
+BACKGROUND = "#f5f8fc"
+NEUTRAL = "#173f72"
+SECONDARY = "#425a73"
+SUCCESS = "#166534"
+REPEAT = "#854d0e"
+ERROR = "#991b1b"
+
 
 class PublicWindow(QMainWindow):
     def __init__(self) -> None:
@@ -23,25 +30,25 @@ class PublicWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.setContentsMargins(56, 48, 56, 48)
         self.context = plain_label(wrap=True)
-        self.context.setStyleSheet("color: #b5cde5; font-size: 23px;")
+        self.context.setStyleSheet(f"color: {SECONDARY}; font-size: 23px;")
         self.context.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.context)
         layout.addStretch(2)
         self.headline = plain_label(wrap=True)
-        self.headline.setStyleSheet("font-size: 46px; font-weight: 700; color: #ffffff;")
+        self.headline.setStyleSheet(f"font-size: 46px; font-weight: 700; color: {NEUTRAL};")
         self.headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.headline)
         self.person = plain_label(wrap=True)
-        self.person.setStyleSheet("font-size: 34px; color: #d1fae5; padding: 20px;")
+        self.person.setStyleSheet(f"font-size: 34px; color: {NEUTRAL}; padding: 20px;")
         self.person.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.person)
         self.detail = plain_label(wrap=True)
-        self.detail.setStyleSheet("font-size: 22px; color: #b5cde5;")
+        self.detail.setStyleSheet(f"font-size: 22px; color: {SECONDARY};")
         self.detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.detail)
         layout.addStretch(3)
         self.setCentralWidget(central)
-        self.setStyleSheet("QMainWindow, QWidget { background: #10263f; }")
+        self.setStyleSheet(f"QMainWindow, QWidget {{ background: {BACKGROUND}; }}")
         self.show_idle()
 
     def set_timeout_seconds(self, seconds: int) -> None:
@@ -59,7 +66,7 @@ class PublicWindow(QMainWindow):
 
     def show_idle(self) -> None:
         self.person.clear()
-        self._set_feedback_color("#ffffff")
+        self._set_feedback_color(NEUTRAL)
         self.headline.setText("Приложите карту" if self._open else "Регистрация закрыта")
         self.detail.setText("Дождитесь подтверждения" if self._open else "Ожидайте начала занятия")
 
@@ -70,7 +77,7 @@ class PublicWindow(QMainWindow):
     def display_update_error(self) -> None:
         self.timer.stop()
         self.person.clear()
-        self._set_feedback_color("#fca5a5")
+        self._set_feedback_color(ERROR)
         self.headline.setText("Проверьте отметку у преподавателя")
         self.detail.setText("Экран не обновился")
         self.timer.start(self._timeout_ms)
@@ -92,9 +99,7 @@ class PublicWindow(QMainWindow):
         }
         self.headline.setText(messages.get(result.kind, "Повторите попытку"))
         self._set_feedback_color(
-            {"success": "#86efac", "repeat": "#fde047", "error": "#fca5a5"}.get(
-                result.kind, "#ffffff"
-            )
+            {"success": SUCCESS, "repeat": REPEAT, "error": ERROR}.get(result.kind, NEUTRAL)
         )
         if result.kind == "error":
             self.detail.setText("Повторите попытку или обратитесь к преподавателю")
@@ -102,7 +107,7 @@ class PublicWindow(QMainWindow):
             self.person.setText(result.full_name or "")
             parts = []
             if not result.full_name:
-                parts.append("Преподаватель сопоставит карту позднее")
+                parts.append("Преподаватель сопоставит позже")
             if result.at:
                 parts.append(result.at.strftime("%H:%M:%S %Z"))
             self.detail.setText("\n".join(parts))

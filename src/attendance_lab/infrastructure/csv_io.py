@@ -16,6 +16,7 @@ from attendance_lab.domain.models import (
     LogRow,
     Student,
 )
+from attendance_lab.infrastructure.grading_export import export_xlsx
 
 
 def read_csv(
@@ -227,3 +228,4 @@ class CsvFiles:
     write_csv = staticmethod(write_csv)
     export_report = staticmethod(export_report)
     export_log = staticmethod(export_log)
+    export_xlsx = staticmethod(export_xlsx)

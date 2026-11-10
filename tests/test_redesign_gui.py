@@ -1,6 +1,8 @@
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QApplication
 
 from attendance_lab.presentation.attendance_models import StudentModel, StudentProxy, StudentSearch
@@ -67,8 +69,6 @@ def test_cached_fuzzy_search_handles_reordered_words_and_yo():
 
 
 def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
-    from datetime import date
-
     from attendance_lab.application.controller import AttendanceController
     from attendance_lab.application.service import AttendanceService
     from attendance_lab.infrastructure.csv_io import CsvFiles
@@ -90,7 +90,7 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
             "Номер зачётки",
         ],
         [["1", "Семёнов Иван", "Физика", "Физика", "1", "2", "00123"]],
-        date.today().year,
+        datetime.now(ZoneInfo("Europe/Minsk")).date().year,
     )
     assert not plan.errors
     api.apply_import(plan)
@@ -100,7 +100,7 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
     roster = api.save_roster(
         discipline.id, year.id, 1, "Лаборатория", "lab", 2, "groups", {group.id}, set()
     )
-    block = api.schedule_block(roster.id, date.today(), 1)
+    block = api.schedule_block(roster.id, datetime.now(ZoneInfo("Europe/Minsk")).date(), 1)
     controller = AttendanceController(service, DemoReader)
     window = MainWindow(
         service,
@@ -113,6 +113,8 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
     window.event_timer.stop()
     window.show()
     app.processEvents()
+    assert not window.workspace.confirm_button.isVisible()
+    window.workspace.open_search()
     for width, height in ((980, 720), (1366, 768)):
         window.resize(width, height)
         app.processEvents()
@@ -128,6 +130,10 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
         workspace.show_context.setChecked(True)
         assert all(not workspace.table.isColumnHidden(column) for column in (1, 3, 4, 5))
         workspace.show_context.setChecked(False)
+    lesson_day = QDate(block.date.year, block.date.month, block.date.day)
+    window.history.date_from.setDate(lesson_day)
+    window.history.date_to.setDate(lesson_day)
+    window.history.refresh()
     assert window.history.model.contexts
     controller.connect_reader(controller.available_readers()[0])
     controller.open_session(block.id, {block.pair_ids[-1]})
@@ -143,7 +149,9 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
     assert window.workspace.search.cursorPosition() == 2
     assert window.workspace.selected_ids() == ids
     assert window.workspace.pinned_uid == "0011"
-    assert window.tabs.count() == 4
+    assert [
+        window.tabs.tabText(i) for i in range(window.tabs.count()) if window.tabs.isTabVisible(i)
+    ] == ["Занятие", "Посещаемость", "Оценки", "Курс"]
     window.workspace.pinned_uid = None
     window.workspace.pending_uids.clear()
     window.workspace.queue.clear()

@@ -6,7 +6,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QPixmap
+from PySide6.QtGui import QAction, QCloseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QStyle,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -38,6 +39,7 @@ from attendance_lab.presentation.common import (
     plain_label,
     private_message,
 )
+from attendance_lab.presentation.course_workspace import CourseWorkspace
 from attendance_lab.presentation.history import HistoryPane
 from attendance_lab.presentation.lesson_workspace import LessonWorkspace
 from attendance_lab.presentation.logs import LogsWindow
@@ -73,12 +75,12 @@ class MainWindow(QMainWindow):
             "Учёт посещаемости — "
             + ("ИМИТАТОР · тестовая база" if demo else "Приватное управление")
         )
-        self.resize(1320, 920)
+        self.resize(1280, 800)
         self.setMinimumSize(980, 720)
         self.setStyleSheet(STYLE)
         central = QWidget()
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(7)
         heading = plain_label("Учёт посещаемости")
         heading.setObjectName("Heading")
@@ -88,8 +90,8 @@ class MainWindow(QMainWindow):
             logo = plain_label()
             logo.setPixmap(
                 QPixmap(str(logo_path)).scaled(
-                    180,
-                    58,
+                    110,
+                    32,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
@@ -107,22 +109,6 @@ class MainWindow(QMainWindow):
         self.active_banner = plain_label(wrap=True)
         self.active_banner.setObjectName("ActiveBanner")
         layout.addWidget(self.active_banner)
-        self.stop_button = QPushButton("Завершить регистрацию")
-        self.stop_button.clicked.connect(self.close_registration)
-        active_actions = QHBoxLayout()
-        self.public_button = QPushButton("Публичное окно")
-        self.public_button.setObjectName("Primary")
-        self.public_button.clicked.connect(self.show_public)
-        active_actions.addWidget(self.public_button)
-        logs_button = QPushButton("Приватный журнал активного занятия")
-        logs_button.clicked.connect(self.show_active_log)
-        active_actions.addWidget(logs_button)
-        self.open_button = QPushButton("Открыть регистрацию · F9")
-        self.open_button.clicked.connect(lambda: self.workspace.open_selected())
-        active_actions.addWidget(self.open_button)
-        active_actions.addWidget(self.stop_button)
-        active_actions.addStretch()
-        layout.addLayout(active_actions)
         self.tabs = QTabWidget()
         self.schedule = SchedulePane(
             service, self.refresh, self.open_registration, self.show_log, default_timezone, self
@@ -145,49 +131,136 @@ class MainWindow(QMainWindow):
         self.students.binding_changed = self.card_binding_changed
         self.history.evidence_changed = self.refresh_evidence
         self.tabs.addTab(self.workspace, "Занятие")
-        self.tabs.addTab(self.preparation, "Подготовка")
-        self.tabs.addTab(self.history, "История")
-        settings = self._settings()
-        settings_layout = settings.layout()
-        assert isinstance(settings_layout, QVBoxLayout)
-        settings_layout.insertWidget(0, self.reports)
+        self.course_workspace = CourseWorkspace(
+            service, self.refresh, self.workspace, self.preparation, self, files=files
+        )
+        self.course_workspace.evidence_changed = self.refresh_evidence
+        course_layout = self.course_workspace.layout()
+        assert isinstance(course_layout, QVBoxLayout)
+        course_layout.removeWidget(self.course_workspace.courses)
+        course_row = QHBoxLayout()
+        course_row.addWidget(plain_label("Курс:"))
+        course_row.addWidget(self.course_workspace.courses, 1)
+        layout.insertLayout(1, course_row)
+        attendance = self.course_workspace.journal_pane
+        assert attendance is not None
+        self.course_workspace.tabs.removeTab(self.course_workspace.tabs.indexOf(attendance))
+        self.course_journal = attendance
+        self.tabs.addTab(attendance, "Посещаемость")
+        self.grading_page = self.course_workspace.grading
+        self.tabs.addTab(self.grading_page, "Оценки")
+        self.tabs.addTab(self.course_workspace, "Курс")
+        self.history.setWindowFlag(Qt.WindowType.Window, True)
+        self.history.setWindowTitle("Архив посещаемости прежнего формата")
+        self.settings_pane = self._settings()
+        self.settings_pane.setParent(self)
+        self.settings_pane.hide()
         self.reports.hide()
-        export_button = QPushButton("Экспорт CSV и дополнительные фильтры…")
-        export_button.clicked.connect(self.show_reports)
-        self.history.layout().addWidget(export_button)  # type: ignore[union-attr]
-        self.tabs.addTab(settings, "Настройки")
-        self.commands = Commands(self)
         layout.addWidget(self.tabs, 1)
         self.device_status = plain_label("Считыватель: не подключён", wrap=True)
         self.device_status.setObjectName("Muted")
-        layout.addWidget(self.device_status)
+        self.statusBar().addWidget(self.device_status, 1)
         self.setCentralWidget(central)
         self.public_window = PublicWindow()
         self.logs_window = LogsWindow(service, files, self.students.bind_uid)
         self.logs_window.setStyleSheet(STYLE)
-        self.embedded_log = LogsWindow(service, files, self.students.bind_uid)
-        self.embedded_log.setParent(self.workspace)
-        self.embedded_log.setWindowFlags(Qt.WindowType.Widget)
-        self.embedded_log.setMaximumHeight(235)
-        workspace_layout = self.workspace.layout()
-        assert workspace_layout is not None
-        workspace_layout.addWidget(self.embedded_log)
-        self.embedded_log.hide()
-        self.embedded_log_button = QPushButton("Журнал событий ▸")
-        self.embedded_log_button.setCheckable(True)
-        self.embedded_log_button.toggled.connect(self.embedded_log.setVisible)
-        self.embedded_log_button.toggled.connect(
-            lambda visible: self._refresh_context() if visible else None
-        )
-        workspace_layout.insertWidget(
-            workspace_layout.count() - 1, self.embedded_log_button
-        ) if isinstance(workspace_layout, QVBoxLayout) else None
+        self._menus()
+        self.commands = Commands(self)
         self.event_timer = QTimer(self)
         self.event_timer.setInterval(30)
         self.event_timer.timeout.connect(self.process_events)
         self.event_timer.start()
         self.refresh()
         self.refresh_readers()
+
+    def _menus(self) -> None:
+        def action(menu, title, icon, callback):
+            value = QAction(self.style().standardIcon(icon), title, self)
+            value.triggered.connect(lambda _=False: callback())
+            menu.addAction(value)
+            return value
+
+        file_menu = self.menuBar().addMenu("Файл")
+        action(
+            file_menu,
+            "Импорт списка студентов…",
+            QStyle.StandardPixmap.SP_DirOpenIcon,
+            self.preparation.import_csv,
+        )
+        self.export_action = action(
+            file_menu,
+            "Экспорт журнала в Excel…",
+            QStyle.StandardPixmap.SP_DialogSaveButton,
+            lambda: guarded(self, self.course_workspace.export_journal),
+        )
+        file_menu.addSeparator()
+        action(
+            file_menu, "Создать резервную копию…", QStyle.StandardPixmap.SP_DriveHDIcon, self.backup
+        )
+        action(
+            file_menu,
+            "Восстановить из копии…",
+            QStyle.StandardPixmap.SP_DialogResetButton,
+            self.restore,
+        )
+        file_menu.addSeparator()
+        action(file_menu, "Выход", QStyle.StandardPixmap.SP_DialogCloseButton, self.close)
+        view_menu = self.menuBar().addMenu("Вид")
+        action(view_menu, "Публичное окно", QStyle.StandardPixmap.SP_ComputerIcon, self.show_public)
+        action(
+            view_menu,
+            "Публичное окно на весь экран",
+            QStyle.StandardPixmap.SP_TitleBarMaxButton,
+            self.toggle_fullscreen,
+        )
+        service_menu = self.menuBar().addMenu("Сервис")
+        action(
+            service_menu,
+            "Настройки…",
+            QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            self.show_settings,
+        )
+        self.events_action = action(
+            service_menu,
+            "События считывателя выбранного занятия…",
+            QStyle.StandardPixmap.SP_FileDialogInfoView,
+            self.show_active_log,
+        )
+        service_menu.addSeparator()
+        archive = service_menu.addMenu("Данные прежнего формата")
+        action(
+            archive, "Архив посещаемости…", QStyle.StandardPixmap.SP_DirOpenIcon, self.show_history
+        )
+        action(
+            archive, "Экспорт CSV…", QStyle.StandardPixmap.SP_DialogSaveButton, self.show_reports
+        )
+        self.workspace.blocks.currentIndexChanged.connect(self._refresh_context)
+        self.tabs.currentChanged.connect(self._refresh_context)
+
+    def show_course_members(self) -> None:
+        self.tabs.setCurrentWidget(self.course_workspace)
+        page = self.course_workspace.members.parentWidget()
+        assert page is not None
+        self.course_workspace.tabs.setCurrentWidget(page)
+
+    def show_history(self) -> None:
+        self.history.refresh()
+        self.history.show()
+        self.history.raise_()
+
+    def show_settings(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Настройки")
+        dialog.resize(900, 700)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(self.settings_pane)
+        self.settings_pane.show()
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+        self.settings_pane.hide()
+        self.settings_pane.setParent(self)
 
     def _settings(self) -> QWidget:
         widget = QWidget()
@@ -206,7 +279,7 @@ class MainWindow(QMainWindow):
         )
         reader_layout.addWidget(
             plain_label(
-                "Выберите интерфейс явно. Для исходного ACS события наблюдались на окончании имени «00 01»; имя зависит от устройства.",
+                "Выберите подключённый считыватель и нажмите «Подключить».",
                 wrap=True,
             )
         )
@@ -284,6 +357,34 @@ class MainWindow(QMainWindow):
             return ""
         lesson = self.service.get_lesson(lesson_id)
         names = {d.id: d.name for d in self.service.list_disciplines()}
+        if self.controller.active_session_id is not None:
+            session = self.service.redesign.get_session(self.controller.active_session_id)
+            block = self.service.redesign.get_block(session.block_id)
+            roster = next(
+                r for r in self.service.redesign.list_rosters() if r.id == block.roster_id
+            )
+            course = next(
+                (
+                    course
+                    for course in self.service.courses.list_courses()
+                    if any(
+                        item.block_id == block.id
+                        for item in self.service.courses.list_lessons(course.id)
+                    )
+                ),
+                None,
+            )
+            start = min(self.service.get_lesson(pair).starts_at for pair in block.pair_ids)
+            end = max(self.service.get_lesson(pair).ends_at for pair in block.pair_ids)
+            zone = ZoneInfo(block.timezone)
+            parts = [
+                course.name if course else names.get(lesson.discipline_id, ""),
+                f"{start.astimezone(zone):%d.%m.%Y %H:%M}–{end.astimezone(zone):%H:%M}",
+                block.title,
+            ]
+            if course is None or course.kind != "lecture":
+                parts.append(roster.name)
+            return " · ".join(part for part in parts if part)
         return lesson_label(lesson, names.get(lesson.discipline_id, ""))
 
     def _refresh_context(self) -> None:
@@ -293,12 +394,16 @@ class MainWindow(QMainWindow):
             + (active_label or "закрыта — выберите занятие и откройте регистрацию")
         )
         if self.controller.active_session_id is not None:
-            session = self.service.redesign.get_session(self.controller.active_session_id)
-            block = self.service.redesign.get_block(session.block_id)
             self.active_banner.setText(
-                f"● Регистрация открыта · сеанс #{session.id} · блок #{block.id} · пары {session.target_pair_ids} · {active_label} · устройство: {self.reader_status}"
+                f"● Регистрация открыта · {active_label} · считыватель: {self.reader_status}"
             )
-        self.stop_button.setEnabled(self.controller.active_lesson_id is not None)
+        self.active_banner.setVisible(self.controller.active_lesson_id is not None)
+        if hasattr(self, "events_action"):
+            self.export_action.setEnabled(self.course_workspace.current_course_id is not None)
+            self.events_action.setEnabled(
+                self.controller.active_lesson_id is not None
+                or bool(self.workspace.viewed_pair_ids())
+            )
         self.public_window.set_lesson(
             active_label, registration_open=self.controller.active_lesson_id is not None
         )
@@ -308,7 +413,6 @@ class MainWindow(QMainWindow):
         names = {d.id: d.name for d in self.service.list_disciplines()}
         log_label = lesson_label(lesson, names.get(lesson.discipline_id, "")) if lesson else ""
         self.logs_window.set_context(lesson, log_label, active_label, self.reader_status)
-        self.embedded_log.set_context(lesson, log_label, active_label, self.reader_status)
 
     def refresh(self) -> None:
         self.schedule.refresh()
@@ -316,7 +420,9 @@ class MainWindow(QMainWindow):
         self.reports.refresh()
         self.workspace.refresh()
         self.preparation.refresh()
-        self.history.refresh()
+        self.course_workspace.refresh()
+        if self.history.isVisible():
+            self.history.refresh()
         self._refresh_context()
 
     def registration_changed(self) -> None:
@@ -325,10 +431,12 @@ class MainWindow(QMainWindow):
         self.process_events()
         self._refresh_context()
         self.workspace.update_counts()
+        self.course_workspace.update_attendance()
         self.history.update_evidence()
 
     def refresh_evidence(self) -> None:
         self.workspace.update_counts()
+        self.course_workspace.update_attendance()
         self.history.update_evidence()
         self.schedule.update_counts()
 
@@ -359,15 +467,16 @@ class MainWindow(QMainWindow):
                         self.logs_window.show_scan(
                             event.scan.lesson_id, event.scan.uid, event.result
                         )
-                    if self.embedded_log.isVisible():
-                        self.embedded_log.show_scan(
-                            event.scan.lesson_id, event.scan.uid, event.result
-                        )
                     if event.scan.session_id is not None:
                         session = self.service.redesign.get_session(event.scan.session_id)
                         self.history.update_evidence(set(session.target_pair_ids))
                     else:
                         self.history.update_evidence({event.scan.lesson_id})
+                    self.course_workspace.update_attendance(
+                        set(session.target_pair_ids)
+                        if event.scan.session_id is not None
+                        else {event.scan.lesson_id}
+                    )
                     self.workspace.scan(event.scan, event.result)
                     self.schedule.update_counts(event.scan.lesson_id)
                 elif event.kind == "failed" and event.lesson_id is not None:
@@ -494,9 +603,8 @@ class MainWindow(QMainWindow):
         self.public_window.raise_()
 
     def show_active_log(self) -> None:
-        lesson_id = self.controller.active_lesson_id
-        if lesson_id is None:
-            lesson_id = self.schedule.selected_lesson_id()
+        pairs = self.workspace.viewed_pair_ids()
+        lesson_id = pairs[0] if pairs else self.controller.active_lesson_id
         if lesson_id is not None:
             self.show_log(lesson_id)
         else:
@@ -584,5 +692,7 @@ class MainWindow(QMainWindow):
         self._closing = True
         self.public_window.close()
         self.logs_window.close()
-        self.embedded_log.close()
+        self.grading_page.coefficient_dialog.close()
+        self.history.close()
+        self.preparation.schedule_window.close()
         event.accept()

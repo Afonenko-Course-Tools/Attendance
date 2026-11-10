@@ -46,12 +46,21 @@ def test_schedule_actions_stay_above_scrolling_rows_at_minimum_window(tmp_path, 
     controller.open_lesson(service.list_lessons(discipline.id)[0].id)
     window.registration_changed()
     try:
-        window.tabs.setCurrentWidget(window.preparation)
+        window.tabs.setCurrentWidget(window.course_workspace)
+        window.course_workspace.tabs.setCurrentWidget(window.preparation)
         window.preparation.tabs.setCurrentIndex(0)
         window.resize(*size)
         window.show()
         app.processEvents()
         assert (window.width(), window.height()) == size
+        host = window.preparation.schedule_window
+        host.resize(*size)
+        assert all(
+            window.preparation.tabs.tabText(index) != "Исходное расписание"
+            for index in range(window.preparation.tabs.count())
+        )
+        host.show()
+        app.processEvents()
         pane = window.schedule
         assert pane.lessons.horizontalHeader().isVisible()
         assert pane.lessons.viewport().height() >= sum(
@@ -70,12 +79,12 @@ def test_schedule_actions_stay_above_scrolling_rows_at_minimum_window(tmp_path, 
             )
         }
         assert len(actions) == 5
-        table_top = pane.lessons.mapTo(window, QPoint()).y()
+        table_top = pane.lessons.mapTo(host, QPoint()).y()
         for button in actions.values():
-            top = button.mapTo(window, QPoint())
-            assert button.isVisibleTo(window)
-            assert window.rect().contains(top)
-            assert window.rect().contains(button.mapTo(window, button.rect().bottomRight()))
+            top = button.mapTo(host, QPoint())
+            assert button.isVisibleTo(host)
+            assert host.rect().contains(top)
+            assert host.rect().contains(button.mapTo(host, button.rect().bottomRight()))
             assert top.y() + button.height() <= table_top
             assert button.width() >= button.sizeHint().width()
         assert not pane.parentWidget().findChildren(QScrollArea)
@@ -94,6 +103,7 @@ def test_schedule_actions_stay_above_scrolling_rows_at_minimum_window(tmp_path, 
         QTest.mouseClick(actions["Открыть регистрацию"], Qt.MouseButton.LeftButton)
         assert opened == [selected]
     finally:
+        window.preparation.schedule_window.close()
         window.close()
         service.close()
         app.setStyle(original_style)

@@ -51,3 +51,8 @@ secrets.json
 .idea/
 .vscode/
 .DS_Store
+
+# Local migration review and approval may contain private academic history.
+form-proposals.json
+approved-plan.json
+review-plan.html
