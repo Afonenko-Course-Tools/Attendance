@@ -1,6 +1,7 @@
 """Discrete report rubric controls; domain criterion order stays unchanged."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -17,6 +18,56 @@ from PySide6.QtWidgets import (
 )
 
 from attendance_lab.domain.grading import CRITERIA, Criterion
+
+
+@dataclass(frozen=True)
+class LevelColors:
+    """Presentation colors only; ordinal values and scoring remain in the domain."""
+
+    tint: str
+    hover: str
+    selected: str
+    text: str
+
+
+LEVEL_COLORS = (
+    LevelColors("#fbe6e5", "#f5cdca", "#8b2525", "#6f1d1d"),
+    LevelColors("#fff0ec", "#fbdcd4", "#a33b22", "#81321f"),
+    LevelColors("#eaf2fc", "#d6e6fa", "#245a91", "#244b72"),
+    LevelColors("#edf6ed", "#d9edd9", "#346a36", "#305b31"),
+    LevelColors("#e1f1e8", "#c9e5d6", "#185b3b", "#20583e"),
+)
+DISABLED_TINT = "#f0f1f2"
+DISABLED_SELECTED = "#dde0e3"
+DISABLED_TEXT = "#4f565c"
+
+
+def level_styles(colors: LevelColors) -> str:
+    return f"""
+        QPushButton {{
+            background: {colors.tint}; color: {colors.text};
+            border: 1px solid {colors.text}; border-radius: 4px;
+            padding: 5px 3px;
+        }}
+        QPushButton:hover:enabled {{ background: {colors.hover}; }}
+        QPushButton:checked {{
+            background: {colors.selected}; color: #ffffff;
+            border: 2px solid {colors.selected}; padding: 4px 2px;
+        }}
+        QPushButton:checked:hover:enabled {{
+            background: {colors.selected}; color: #ffffff; border-color: #152d45;
+        }}
+        QPushButton[rubricFocus="true"]:checked {{
+            border: 3px solid #152d45; padding: 3px 1px;
+        }}
+        QPushButton:disabled {{
+            background: {DISABLED_TINT}; color: {DISABLED_TEXT}; border-color: #a3a9af;
+        }}
+        QPushButton:checked:disabled {{
+            background: {DISABLED_SELECTED}; color: {DISABLED_TEXT};
+            border: 2px solid #79828b; padding: 4px 2px;
+        }}
+    """
 
 
 class CriterionLevels(QWidget):
@@ -56,6 +107,9 @@ class CriterionLevels(QWidget):
         self.group.setExclusive(True)
         for index, text in enumerate(labels):
             button = QPushButton(text)
+            color_index = index if criterion.steps == 5 else (1, 2, 3)[index]
+            button.setProperty("rubricFocus", False)
+            button.setStyleSheet(level_styles(LEVEL_COLORS[color_index]))
             button.setCheckable(True)
             button.setAutoDefault(False)
             button.setMinimumHeight(44)
@@ -70,11 +124,6 @@ class CriterionLevels(QWidget):
         self.setValue(value)
         self.group.idClicked.connect(self._choose)
         layout.addLayout(choices)
-        self.setStyleSheet(
-            "QPushButton:checked { background: palette(highlight); "
-            "color: palette(highlighted-text); font-weight: 600; "
-            "border: 2px solid palette(highlight); }"
-        )
 
     def value(self) -> int:
         return self._value
@@ -83,6 +132,10 @@ class CriterionLevels(QWidget):
         if not 0 <= value < self.criterion.steps:
             raise ValueError("Criterion level is outside its discrete scale")
         self.buttons[value].setChecked(True)
+        for index, button in enumerate(self.buttons):
+            font = button.font()
+            font.setBold(index == value)
+            button.setFont(font)
         if value != self._value:
             self._value = value
             self.valueChanged.emit(value)
@@ -114,6 +167,7 @@ class CriterionLevels(QWidget):
         font = self.title.font()
         font.setBold(True)
         self.title.setFont(font)
+        self._show_focus(True)
         self.focused.emit()
 
     def focusOutEvent(self, event):
@@ -121,6 +175,14 @@ class CriterionLevels(QWidget):
         font = self.title.font()
         font.setBold(False)
         self.title.setFont(font)
+        self._show_focus(False)
+
+    def _show_focus(self, focused: bool) -> None:
+        for button in self.buttons:
+            button.setProperty("rubricFocus", focused)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
 
 
 class ReportCriteriaPanel(QScrollArea):

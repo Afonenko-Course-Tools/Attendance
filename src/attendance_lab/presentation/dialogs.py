@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PySide6.QtCore import QDate, QDateTime, Qt, QTime, QTimeZone
-from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -36,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from attendance_lab.domain.models import CardInfo, Discipline, Lesson, Student
 from attendance_lab.presentation.attendance_models import StudentSearch, normalized
+from attendance_lab.presentation.search_results import SearchResultsPane
 
 if TYPE_CHECKING:
     from attendance_lab.application.files import CsvPort, ImportPreview
@@ -597,11 +597,10 @@ class BindingDialog(QDialog):
             self.course.setCurrentIndex(self.course.findData(owner.course))
         self.course.setVisible(bool(self.contexts))
         layout.addWidget(self.course)
-        self.search = QLineEdit()
+        self.search_pane = SearchResultsPane(self)
+        self.search = self.search_pane.search
         self.search.setPlaceholderText("ФИО с опечатками, группа, № зачётки · ↓ к результатам")
-        layout.addWidget(self.search)
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list_widget = self.search_pane.results
         for student in sorted(students, key=lambda value: (value.full_name.casefold(), value.id)):
             context = self.contexts.get(student.id)
             text = (
@@ -613,7 +612,7 @@ class BindingDialog(QDialog):
             )
             item = QListWidgetItem(text, self.list_widget)
             item.setData(Qt.ItemDataRole.UserRole, student.id)
-        layout.addWidget(self.list_widget, 1)
+        layout.addWidget(self.search_pane, 1)
         self.status = _label()
         layout.addWidget(self.status)
         self.buttons = _buttons(self, "Исправить привязку" if correction else "Сопоставить")
@@ -623,10 +622,7 @@ class BindingDialog(QDialog):
         self.course.currentIndexChanged.connect(lambda *_: self._filter(self.search.text()))
         self.list_widget.itemSelectionChanged.connect(self._update_button)
         self.remove_binding.toggled.connect(self._update_button)
-        self.next_match = QShortcut(QKeySequence("Down"), self.search)
-        self.next_match.setContext(Qt.ShortcutContext.WidgetShortcut)
-        self.next_match.activated.connect(self._focus_matches)
-        self.list_widget.itemActivated.connect(lambda *_: self.accept())
+        self.search_pane.activation.connect(self.accept)
         if not students:
             layout.insertWidget(
                 3, _label("Сначала добавьте студентов вручную или импортируйте CSV.")
@@ -653,17 +649,7 @@ class BindingDialog(QDialog):
         self._update_button()
 
     def _focus_matches(self) -> None:
-        first = next(
-            (
-                self.list_widget.item(i)
-                for i in range(self.list_widget.count())
-                if not self.list_widget.item(i).isHidden()
-            ),
-            None,
-        )
-        if first:
-            self.list_widget.setFocus()
-            self.list_widget.setCurrentItem(first)
+        self.search_pane.focus_matches()
 
     def _update_button(self, *_args: Any) -> None:
         removing = self.correction and self.remove_binding.isChecked()

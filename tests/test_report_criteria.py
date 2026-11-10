@@ -114,3 +114,93 @@ def test_rubric_width_and_scroll_keep_buttons_inside_viewport(app, width):
     assert point.y() <= panel.viewport().height(), (
         "Keyboard focus scrolls the whole criterion into view"
     )
+
+
+def _contrast(first, second):
+    from PySide6.QtGui import QColor
+
+    def luminance(value):
+        color = QColor(value)
+        channels = [channel / 255 for channel in (color.red(), color.green(), color.blue())]
+        linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return sum(c * weight for c, weight in zip(linear, (0.2126, 0.7152, 0.0722), strict=True))
+
+    light, dark = sorted((luminance(first), luminance(second)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def test_level_colors_have_readable_contrast_in_every_display_state():
+    from attendance_lab.presentation.report_criteria import (
+        DISABLED_SELECTED,
+        DISABLED_TEXT,
+        DISABLED_TINT,
+        LEVEL_COLORS,
+    )
+
+    for colors in LEVEL_COLORS:
+        assert _contrast(colors.text, colors.tint) >= 4.5
+        assert _contrast(colors.text, colors.hover) >= 4.5
+        assert _contrast("#ffffff", colors.selected) >= 4.5
+    assert _contrast(DISABLED_TEXT, DISABLED_TINT) >= 4.5
+    assert _contrast(DISABLED_TEXT, DISABLED_SELECTED) >= 4.5
+
+
+def _button_background(button):
+    # Sample inside the left edge, away from the text, rounded corner and border.
+    return button.grab().toImage().pixelColor(10, button.height() // 2).name()
+
+
+def test_rendered_ordinal_colors_checked_hover_focus_and_inactive_written(app):
+    from PySide6.QtCore import QPoint
+
+    from attendance_lab.presentation.report_criteria import (
+        DISABLED_SELECTED,
+        DISABLED_TINT,
+        LEVEL_COLORS,
+    )
+
+    panel = ReportCriteriaPanel(written=True)
+    panel.resize(780, 720)
+    panel.show()
+    app.processEvents()
+    oral = panel.controls[13]
+    oral.clearFocus()
+    panel.oral_toggle.setFocus()
+    app.processEvents()
+    for index, button in enumerate(oral.buttons):
+        expected = (
+            LEVEL_COLORS[index].selected if index == oral.value() else LEVEL_COLORS[index].tint
+        )
+        assert _button_background(button) == expected
+    QTest.mouseMove(oral.buttons[0], QPoint(12, 20))
+    app.processEvents()
+    assert _button_background(oral.buttons[0]) == LEVEL_COLORS[0].hover
+    QTest.mouseClick(oral.buttons[0], Qt.MouseButton.LeftButton)
+    app.processEvents()
+    assert oral.buttons[0].isChecked() and oral.hasFocus()
+    assert _button_background(oral.buttons[0]) == LEVEL_COLORS[0].selected, (
+        "Hover must not put white selected text on the pale unselected background"
+    )
+    assert oral.buttons[0].property("rubricFocus") is True
+    assert oral.buttons[0].font().bold()
+    panel.oral_toggle.setFocus()
+    app.processEvents()
+    assert oral.buttons[0].property("rubricFocus") is False
+    panel.set_written(False)
+    panel.written_toggle.click()
+    app.processEvents()
+    written = panel.controls[0]
+    panel.ensureWidgetVisible(written)
+    app.processEvents()
+    before = panel.levels()
+    for index, button in enumerate(written.buttons):
+        assert not button.isEnabled()
+        expected = DISABLED_SELECTED if index == written.value() else DISABLED_TINT
+        assert _button_background(button) == expected
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+    assert panel.levels() == before
+    panel.set_written(True)
+    app.processEvents()
+    assert _button_background(written.buttons[0]) == LEVEL_COLORS[1].tint
+    assert _button_background(written.buttons[1]) == LEVEL_COLORS[2].selected
+    assert _button_background(written.buttons[2]) == LEVEL_COLORS[3].tint
