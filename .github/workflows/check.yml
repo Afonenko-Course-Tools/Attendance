@@ -25,3 +25,4 @@ jobs:
           uv pip install --python /tmp/attendance-wheel/bin/python dist/*.whl
           cd /tmp
           QT_QPA_PLATFORM=offscreen /tmp/attendance-wheel/bin/attendance-lab --demo --db /tmp/attendance-smoke/demo.sqlite3 --smoke-test
+          QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software /tmp/attendance-wheel/bin/attendance-lab-quick --demo --db /tmp/attendance-quick-smoke/demo.sqlite3 --smoke-test

@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 
 from attendance_lab.domain.models import AttendanceError
 from attendance_lab.domain.redesign import (
+    EXCUSED_ABSENCE_REASON,
     AcademicGroup,
     AcademicYear,
     Evidence,
@@ -534,7 +535,7 @@ class RedesignSQLiteMixin:
         ]
         result += [
             Evidence(
-                "manual",
+                "excused" if r["reason"] == EXCUSED_ABSENCE_REASON else "manual",
                 pair_id,
                 r["student_id"],
                 datetime.fromisoformat(r["confirmed_at"]),
@@ -542,17 +543,28 @@ class RedesignSQLiteMixin:
                 r["session_id"],
                 r["batch_id"],
                 r["revoked_at"] is None,
+                datetime.fromisoformat(r["revoked_at"]) if r["revoked_at"] else None,
             )
             for r in self._connection.execute(
-                "SELECT e.*,b.confirmed_at,b.revoked_at FROM manual_evidence e JOIN manual_batches b ON b.id=e.batch_id "
+                "SELECT e.*,b.reason,b.confirmed_at,COALESCE(x.revoked_at,b.revoked_at) AS revoked_at "
+                "FROM manual_evidence e JOIN manual_batches b ON b.id=e.batch_id "
+                "LEFT JOIN manual_target_revocations x ON x.batch_id=e.batch_id "
+                "AND x.student_id=e.student_id AND x.pair_id=? "
                 "WHERE e.pair_id=? OR (e.session_id IS NOT NULL AND EXISTS(SELECT 1 FROM session_target_pairs t WHERE t.session_id=e.session_id AND t.pair_id=?))",
-                (pair_id, pair_id),
+                (pair_id, pair_id, pair_id),
             )
         ]
         return sorted(result, key=lambda e: e.at)
 
     def rd_batches(self):
         result = []
+        revocations = {}
+        for row in self._connection.execute(
+            "SELECT * FROM manual_target_revocations ORDER BY batch_id,student_id,pair_id"
+        ):
+            revocations.setdefault(row["batch_id"], []).append(
+                (row["student_id"], row["pair_id"], datetime.fromisoformat(row["revoked_at"]))
+            )
         for r in self._connection.execute("SELECT * FROM manual_batches ORDER BY id"):
             items = self._connection.execute(
                 "SELECT * FROM manual_evidence WHERE batch_id=? ORDER BY student_id,pair_id",
@@ -578,9 +590,18 @@ class RedesignSQLiteMixin:
                     datetime.fromisoformat(r["confirmed_at"]),
                     datetime.fromisoformat(r["revoked_at"]) if r["revoked_at"] else None,
                     session_id,
+                    tuple(revocations.get(r["id"], ())),
                 )
             )
         return result
+
+    def rd_revoke_targets(self, targets, at):
+        for batch, student, pair in sorted(targets):
+            self._rd_execute(
+                "INSERT INTO manual_target_revocations VALUES(?,?,?,?) "
+                "ON CONFLICT(batch_id,student_id,pair_id) DO NOTHING",
+                (batch, student, pair, stamp(at)),
+            )
 
     def rd_save_batch(self, value, student_ids=()):
         if value.id:

@@ -28,6 +28,42 @@ class CourseAbsences:
         return bool(self.unresolved_lesson_ids)
 
 
+@dataclass(frozen=True, slots=True)
+class JournalAbsences:
+    missed_topics: Mapping[str, frozenset[int]]
+    unresolved_topics: Mapping[str, frozenset[int]]
+    incomplete: bool
+
+
+def journal_absences(
+    service: AttendanceService,
+    course_id: int,
+    projection: set[tuple[str, int]] | None = None,
+    *,
+    excused: set[tuple[str, int]] | None = None,
+    now: datetime | None = None,
+) -> JournalAbsences:
+    """Per-student journal projection, keeping known misses and uncertainty apart."""
+    with service.repository.transaction(write=False):
+        if projection is None or excused is None:
+            present, stored_excused = service.courses.attendance_statuses(course_id)
+            projection = present if projection is None else projection
+            excused = stored_excused if excused is None else excused
+        summary = course_absences(service, course_id, projection, excused=excused, now=now)
+        confirmed: dict[str, set[int]] = {}
+        for student_id, topic_id in projection | excused:
+            confirmed.setdefault(student_id, set()).add(topic_id)
+        unresolved = {
+            student: summary.unresolved_topic_ids.difference(
+                expected, confirmed.get(student, set())
+            )
+            for student, expected in summary.expected_topics.items()
+        }
+        return JournalAbsences(
+            summary.missed_topics, MappingProxyType(unresolved), summary.incomplete
+        )
+
+
 def _expected_ids(service, course, block, pairs, students, assigned_rosters):
     if course.kind == "lecture":
         return frozenset(students)
@@ -67,6 +103,7 @@ def course_absences(
     course_id: int,
     projection: set[tuple[str, int]] | None = None,
     *,
+    excused: set[tuple[str, int]] | None = None,
     now: datetime | None = None,
 ) -> CourseAbsences:
     """Read course enrollment and assigned lesson groups without repairing history.
@@ -84,11 +121,11 @@ def course_absences(
     with service.repository.transaction(write=False):
         course = service.courses.get_course(course_id)
         students = {s.student_id for s in service.courses.list_students(course_id)}
-        present = (
-            projection
-            if projection is not None
-            else service.courses.attendance_projection(course_id)
-        )
+        if projection is None or excused is None:
+            present, stored_excused = service.courses.attendance_statuses(course_id)
+            projection = present if projection is None else projection
+            excused = stored_excused if excused is None else excused
+        accounted_for = projection | excused
         assigned_rosters = {roster.id: roster for roster in service.courses.list_rosters(course_id)}
         expected: dict[str, set[int]] = {student: set() for student in students}
         unresolved_lessons: list[int] = []
@@ -107,7 +144,7 @@ def course_absences(
                 expected[student].add(occurrence.topic_id)
         frozen_expected = {student: frozenset(topics) for student, topics in expected.items()}
         missing = {
-            student: frozenset(topic for topic in topics if (student, topic) not in present)
+            student: frozenset(topic for topic in topics if (student, topic) not in accounted_for)
             for student, topics in expected.items()
         }
         return CourseAbsences(

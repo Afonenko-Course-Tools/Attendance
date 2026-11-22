@@ -8,6 +8,15 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
+@pytest.fixture(scope="session", autouse=True)
+def quick_control_style():
+    # Configure controls before any standalone QML test imports its first component.
+    # Domain tests still do not construct a GUI application.
+    from attendance_lab.presentation.quick.theme import configure_style
+
+    configure_style()
+
+
 @pytest.fixture(autouse=True)
 def release_test_windows():
     yield

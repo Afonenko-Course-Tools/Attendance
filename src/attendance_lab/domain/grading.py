@@ -1,7 +1,9 @@
 """Pure, versioned course assessment; observations are never mutated by fitting."""
 
+from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from math import exp, isfinite
+from math import exp, isfinite, sqrt
 from statistics import fmean, pstdev
 
 from attendance_lab.domain.models import AttendanceError
@@ -74,6 +76,20 @@ class WrittenWork:
             raise AttendanceError("Укажите название и положительный максимум работы.")
         if not isfinite(self.weight) or self.weight <= 0:
             raise AttendanceError("Вес работы должен быть положительным.")
+
+
+@dataclass(frozen=True, slots=True)
+class WrittenScore:
+    score: float
+    variant: str
+
+    def __post_init__(self):
+        variant = " ".join(self.variant.split()) if isinstance(self.variant, str) else ""
+        if not variant:
+            raise AttendanceError("Укажите вариант контрольной работы.")
+        if not isfinite(self.score) or self.score < 0:
+            raise AttendanceError("Баллы выходят за исходную шкалу работы.")
+        object.__setattr__(self, "variant", variant)
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +239,57 @@ def distribution(results: tuple[GradeResult, ...]) -> Distribution:
     return Distribution(n, len(results) - n, mean, deviation, counts, diagnostic)
 
 
+MINIMUM_VARIANT_FIT_SIZE = 5
+
+
+@dataclass(frozen=True, slots=True)
+class VariantBalance:
+    weights: Mapping[str, float]
+    work_ids: tuple[int, ...]
+
+
+def variant_balance(
+    results: tuple[GradeResult, ...], variants: Mapping[tuple[str, int], str]
+) -> VariantBalance:
+    """Balance complete results within well-covered variants of each work."""
+    completed = {result.student_id for result in results if result.final is not None}
+    groups: dict[tuple[int, str], list[str]] = defaultdict(list)
+    for (student_id, work_id), variant in variants.items():
+        if student_id in completed:
+            groups[work_id, variant].append(student_id)
+    supported: dict[int, list[list[str]]] = defaultdict(list)
+    for (work_id, _), students in groups.items():
+        if len(students) >= MINIMUM_VARIANT_FIT_SIZE:
+            supported[work_id].append(students)
+    eligible = {work_id: cohorts for work_id, cohorts in supported.items() if len(cohorts) > 1}
+    shifts: dict[str, float] = defaultdict(float)
+    for cohorts in eligible.values():
+        mean_size = fmean(len(cohort) for cohort in cohorts)
+        for cohort in cohorts:
+            shift = mean_size / len(cohort) - 1
+            for student_id in cohort:
+                shifts[student_id] += shift
+    return VariantBalance(
+        {student_id: 1 + shift / len(eligible) for student_id, shift in shifts.items()},
+        tuple(sorted(eligible)),
+    )
+
+
+def statistical_moments(
+    results: tuple[GradeResult, ...], weights: Mapping[str, float] | None = None
+) -> tuple[float | None, float | None]:
+    complete = [(result.student_id, result.final) for result in results if result.final is not None]
+    if not complete:
+        return None, None
+    values = [value for _, value in complete]
+    if not weights:
+        return fmean(values), pstdev(values)
+    sample_weights = [weights.get(student_id, 1.0) for student_id, _ in complete]
+    mean = fmean(values, sample_weights)
+    deviation = sqrt(fmean([(value - mean) ** 2 for value in values], sample_weights))
+    return mean, deviation
+
+
 @dataclass(frozen=True, slots=True)
 class FitBound:
     field: str
@@ -237,6 +304,8 @@ def fit_parameters(
     bounds: tuple[FitBound, ...],
     target_mean: float,
     target_deviation: float,
+    *,
+    observation_weights: Mapping[str, float] | None = None,
 ) -> CalculationParameters:
     """Deterministic bounded coordinate search against the common course function."""
     if not 0 <= target_mean <= 10 or not 0 <= target_deviation <= 5:
@@ -292,10 +361,10 @@ def fit_parameters(
             raise AttendanceError("Некорректные границы подбора.")
 
     def loss(parameters):
-        stats = distribution(tuple(evaluate(parameters)))
-        if stats.mean is None:
+        mean, deviation = statistical_moments(tuple(evaluate(parameters)), observation_weights)
+        if mean is None or deviation is None:
             raise AttendanceError("Нет полных результатов для подбора.")
-        return (stats.mean - target_mean) ** 2 + ((stats.deviation or 0) - target_deviation) ** 2
+        return (mean - target_mean) ** 2 + (deviation - target_deviation) ** 2
 
     best, best_loss = current, loss(current)
     for _ in range(3):

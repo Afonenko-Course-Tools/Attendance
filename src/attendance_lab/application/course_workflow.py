@@ -523,16 +523,19 @@ class CourseWorkflow:
         return self.api.create_manual_batch(targets, reason)
 
     def attendance_projection(self, course_id, pair_ids=None):
+        present, _ = self.attendance_statuses(course_id, pair_ids)
+        return present
+
+    def attendance_statuses(self, course_id, pair_ids=None):
         blocks = {b.id: b for b in self.api.list_blocks()}
-        result = set()
+        present, excused = set(), set()
         for lesson in self.list_lessons(course_id):
             block = blocks[lesson.block_id]
             if pair_ids is not None and not set(block.pair_ids).intersection(pair_ids):
                 continue
             for pair in block.pair_ids:
-                result.update(
-                    (e.student_id, lesson.topic_id)
-                    for e in self.api.pair_evidence(pair)
-                    if e.student_id and e.active
-                )
-        return result
+                for evidence in self.api.pair_evidence(pair, include_excused=True):
+                    if evidence.student_id and evidence.active:
+                        target = excused if evidence.kind == "excused" else present
+                        target.add((evidence.student_id, lesson.topic_id))
+        return present, excused - present

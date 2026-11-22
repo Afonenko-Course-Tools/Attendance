@@ -99,14 +99,13 @@ def test_toolbar_selection_enables_real_targets_and_series_only(workspace):
     pane.lessons.selectRow(0)
     assert pane.selected_lesson() == one.id
     assert pane.tools["view"].isEnabled() and pane.tools["move"].isEnabled()
-    assert not pane.tools["recurrence"].isEnabled()
+    assert "recurrence" not in pane.tools
     pane.tools["view"].trigger()
     assert pane.lesson_workspace.opened == list(
         service.redesign.get_block(one.block_id).pair_ids[:1]
     )
     pane.lessons.selectRow(1)
     assert pane.selected_lesson() == series[0].id
-    assert pane.tools["recurrence"].isEnabled()
     pane.lessons.clearSelection()
     assert not pane.tools["delete"].isEnabled()
     pane.journal.setCurrentCell(0, pane.journal.columnCount() - 1)
@@ -139,6 +138,7 @@ def test_absences_ignore_future_and_other_subgroups_and_refresh_after_mark(works
         ]
 
     assert visible() == [students[0].student_id]
+    pane.journal_status.setCurrentIndex(2)
     pane.absence_threshold.setValue(2)
     assert visible() == []
     pane.absence_threshold.setValue(1)
@@ -171,9 +171,8 @@ def test_lecture_has_one_stream_no_subgroup_ui_and_cancel_does_not_write(workspa
     pane.courses.setCurrentIndex(pane.courses.findData(lecture.id))
     assert pane.members.rowCount() == 1 and pane.members.item(0, 0).text() == "Общий поток"
     assert not pane.tools["subgroup"].isVisible()
-    pane.journal_context.setChecked(True)
     assert pane.journal.isColumnHidden(2)
-    assert pane.journal_sort.findData(2) == -1
+    assert not pane.journal_columns.available("subgroup")
     assert all(
         pane.missed_topics[student.student_id] == {occurrence.topic_id} for student in students
     )
@@ -264,10 +263,21 @@ def test_journal_name_column_stays_compact_and_can_be_resized(workspace):
     assert (
         pane.journal.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
     )
-    assert pane.journal.columnWidth(0) == 300
-    pane.journal.setColumnWidth(0, 340)
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+
+    header = pane.journal.horizontalHeader()
+    original = pane.journal.columnWidth(0)
+    assert 60 < original < 300
+    start = QPoint(original - 1, header.height() // 2)
+    QTest.mousePress(header.viewport(), Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(header.viewport(), start + QPoint(40, 0))
+    QTest.mouseRelease(header.viewport(), Qt.MouseButton.LeftButton, pos=start + QPoint(40, 0))
+    width = pane.journal.columnWidth(0)
+    assert width > original
     pane.show_course()
-    assert pane.journal.columnWidth(0) == 340
+    QApplication.processEvents()
+    assert abs(pane.journal.columnWidth(0) - width) <= 1
     assert pane.journal.item(0, 0).toolTip() == pane.journal.item(0, 0).text()
 
 
@@ -469,3 +479,72 @@ def test_scheduling_uses_course_format_and_duration_with_only_start_pair(
     assert len(block.pair_ids) == duration
     assert service.courses.get_course(course.id).kind == kind
     assert service.courses.get_course(course.id).duration == duration
+
+
+def test_double_click_edits_planned_date_with_saved_roster(workspace, monkeypatch):
+    from PySide6.QtWidgets import QDateEdit, QDialogButtonBox
+
+    pane, service, course, students, roster, _ = workspace
+    day = datetime.now(ZoneInfo("Europe/Minsk")).date() + timedelta(days=5)
+    lesson = service.courses.schedule(course.id, roster.id, 1, day, 2)
+    block = service.redesign.get_block(lesson.block_id)
+    student_ids = {students[0].student_id}
+    service.redesign.set_pair_roster(block.pair_ids[0], student_ids, "Состав до начала")
+    pane.show_course()
+    pane.lessons.selectRow(0)
+
+    def move(dialog):
+        assert dialog.windowTitle() == "Редактировать занятие"
+        field = dialog.findChild(QDateEdit)
+        assert field.date().toPython() == day and field.isEnabled()
+        field.setDate(field.date().addDays(1))
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(FormDialog, "exec", move)
+    pane.lessons.itemDoubleClicked.emit(pane.lessons.item(0, 0))
+    moved = service.redesign.get_block(block.id)
+    assert moved.date == day + timedelta(days=1)
+    assert moved.pair_ids == block.pair_ids
+    assert service.get_lesson_roster(block.pair_ids[0]) == student_ids
+    assert not pane.lesson_workspace.opened
+    assert pane.selected_lesson() == lesson.id
+
+    service.courses.open_registration(lesson.id)
+
+    def inspect_locked_form(dialog):
+        assert not dialog.findChild(QDateEdit).isEnabled()
+        assert not dialog.buttons.button(QDialogButtonBox.StandardButton.Save).isEnabled()
+        assert any("Регистрация" in label.text() for label in dialog.findChildren(QLabel))
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(FormDialog, "exec", inspect_locked_form)
+    pane.lessons.itemDoubleClicked.emit(pane.lessons.item(0, 0))
+    assert service.redesign.get_block(block.id).date == moved.date
+
+
+def test_delete_key_uses_schedule_confirmation_and_respects_active_registration(
+    workspace, monkeypatch
+):
+    from PySide6.QtTest import QTest
+
+    pane, service, course, _, roster, _ = workspace
+    day = datetime.now(ZoneInfo("Europe/Minsk")).date() + timedelta(days=5)
+    lesson = service.courses.schedule(course.id, roster.id, 1, day, 2)
+    pane.show_course()
+    pane.lessons.selectRow(0)
+    confirmations = []
+
+    def reject(dialog):
+        confirmations.append(dialog.windowTitle())
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(FormDialog, "exec", reject)
+    QTest.keyClick(pane.lessons, Qt.Key.Key_Delete)
+    assert confirmations == ["Удалить выбранное занятие?"]
+    assert not service.lifecycle.deleted_ids()
+
+    service.courses.open_registration(lesson.id)
+    pane.update_actions()
+    QTest.keyClick(pane.lessons, Qt.Key.Key_Backspace)
+    assert confirmations == ["Удалить выбранное занятие?"]
+    assert not service.lifecycle.deleted_ids()

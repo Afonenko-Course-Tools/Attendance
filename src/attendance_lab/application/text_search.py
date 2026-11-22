@@ -1,7 +1,10 @@
 """Reusable in-memory token search without storage or presentation dependencies."""
 
+import re
 from collections.abc import Callable, Iterable
 from typing import Any
+
+NUMERIC_TOKEN = re.compile(r"\d[\d.\-/:]*")
 
 
 def normalized(value: object) -> str:
@@ -23,7 +26,7 @@ class TextSearch[T]:
         self.tokens = frozenset(token for _, tokens in self.entries for token in tokens)
         self.deletion_index = {}
         for token in self.tokens:
-            if token.isdecimal() or len(token) > 40:
+            if NUMERIC_TOKEN.fullmatch(token) or len(token) > 40:
                 continue
             for deletion in self.deletions(token):
                 self.deletion_index.setdefault(deletion, set()).add(token)
@@ -40,7 +43,7 @@ class TextSearch[T]:
 
     def word_scores(self, word):
         scores = {token: 1.0 for token in self.tokens if word in token}
-        if len(word) < 3 or word.isdecimal() or len(word) > 40:
+        if len(word) < 3 or NUMERIC_TOKEN.fullmatch(word) or len(word) > 40:
             return scores
         candidates = set()
         for deletion in self.deletions(word):

@@ -19,11 +19,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from attendance_lab.application.journal import TOGGLE_MESSAGES
+from attendance_lab.application.text_search import TextSearch
 from attendance_lab.presentation.attendance_models import IDENTITY, PAIR, SORT, StudentProxy
 from attendance_lab.presentation.attendance_reasons import MANUAL_REASONS
-from attendance_lab.presentation.common import actions, guarded, plain_label
-from attendance_lab.presentation.preparation import FormDialog, checked, choices
+from attendance_lab.presentation.choice_table import student_context_table
+from attendance_lab.presentation.common import (
+    actions,
+    bind_table_clear,
+    guarded,
+    plain_label,
+    search_field,
+)
+from attendance_lab.presentation.preparation import FormDialog
 from attendance_lab.presentation.sorting import sort_dialog
+from attendance_lab.presentation.table_columns import TableColumns
 
 
 class HistoryModel(QAbstractTableModel):
@@ -66,6 +76,8 @@ class HistoryModel(QAbstractTableModel):
             return row.student.id
         if role == PAIR:
             return self.report.lessons[column - 7].id if column >= 7 else None
+        if role == Qt.ItemDataRole.TextAlignmentRole and column == 1:
+            return Qt.AlignmentFlag.AlignCenter
         if role == Qt.ItemDataRole.ToolTipRole:
             context = (
                 self.contexts.get(row.student.id)
@@ -130,16 +142,18 @@ class HistoryPane(QWidget):
         self.service = service
         layout = QVBoxLayout(self)
         bar = QHBoxLayout()
-        self.discipline, self.search = QComboBox(), QLineEdit()
-        self.search.setPlaceholderText("Фильтр ФИО / группы · F3")
+        self.discipline = QComboBox()
+        self.search = search_field("ФИО, группа, специальность или № зачётки · F3")
+        self.search_index = TextSearch(())
         self.date_from, self.date_to = (
             QDateEdit(QDate.currentDate().addMonths(-6)),
             QDateEdit(QDate.currentDate()),
         )
         for control in (self.date_from, self.date_to):
             control.setCalendarPopup(True)
-        for control in (self.discipline, self.date_from, self.date_to, self.search):
+        for control in (self.discipline, self.date_from, self.date_to):
             bar.addWidget(control)
+        bar.addWidget(self.search, 1)
         layout.addLayout(bar)
         self.model, self.proxy = HistoryModel(), StudentProxy()
         self.proxy.setSourceModel(self.model)
@@ -153,6 +167,23 @@ class HistoryPane(QWidget):
         self.matrix.setSortingEnabled(True)
         self.matrix.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.matrix.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        self.matrix.setToolTip(
+            "Delete или Backspace — отменить ручные отметки в выбранных ячейках."
+        )
+        bind_table_clear(self.matrix, self.clear_selected_attendance)
+        self.show_context = QCheckBox("Показать академический контекст периода")
+        self.columns = TableColumns(
+            self.matrix,
+            "attendance-archive",
+            keys=self.column_keys,
+            available=lambda field: (
+                field != "student"
+                and (
+                    self.show_context.isChecked()
+                    or field not in ("year", "specialty", "subgroup", "record", "id")
+                )
+            ),
+        )
         self.names = QTableView()
         self.names.setModel(self.proxy)
         self.names.setSelectionModel(self.matrix.selectionModel())
@@ -174,8 +205,7 @@ class HistoryPane(QWidget):
         tables.addWidget(self.names)
         tables.addWidget(self.matrix, 1)
         layout.addLayout(tables, 1)
-        self.show_context = QCheckBox("Показать академический контекст периода")
-        self.show_context.toggled.connect(self.toggle_context)
+        self.show_context.toggled.connect(self.columns.restore_visibility)
         layout.addWidget(self.show_context)
         self.selection_count = plain_label(
             "Выберите ячейки посещаемости; Shift — прямоугольный диапазон."
@@ -221,14 +251,30 @@ class HistoryPane(QWidget):
         )
         self.refresh_contexts(report)
         self.model.set_report(report)
-        for column in range(self.model.columnCount()):
-            self.matrix.setColumnWidth(column, 225 if column == 0 else 150)
-        self.matrix.setColumnHidden(0, True)
+        self.search_index = TextSearch(
+            range(self.model.rowCount()),
+            text=lambda row: " ".join(
+                str(self.model.index(row, column).data() or "") for column in range(7)
+            ),
+        )
         for column in range(1, self.model.columnCount()):
             self.names.setColumnHidden(column, True)
         self.names.setColumnWidth(0, 230)
-        self.toggle_context(self.show_context.isChecked())
-        self.update_count()
+        self.columns.restore_visibility()
+        self.filter(self.search.text())
+
+    def column_keys(self):
+        lessons = self.model.report.lessons if self.model.report else ()
+        return (
+            "student",
+            "group",
+            "year",
+            "specialty",
+            "subgroup",
+            "record",
+            "id",
+            *(f"pair-{lesson.id}" for lesson in lessons),
+        )
 
     def refresh_contexts(self, report):
         discipline = self.discipline.currentData()
@@ -255,13 +301,14 @@ class HistoryPane(QWidget):
             else {}
         )
 
-    def toggle_context(self, visible):
-        for column in range(2, 7):
-            self.matrix.setColumnHidden(column, not visible)
-
     def filter(self, text):
         self.matrix.clearSelection()
-        self.proxy.setFilterFixedString(text)
+        self.proxy.filter_by_ids(
+            {self.model.index(row, 0).data(IDENTITY) for row in self.search_index.find(text)}
+            if text.strip()
+            else None
+        )
+        self.columns.schedule_fit()
         self.update_count()
 
     def targets(self):
@@ -276,6 +323,22 @@ class HistoryPane(QWidget):
         self.selection_count.setText(
             f"Студентов: {len({s for s, _ in targets})} · пар: {len({p for _, p in targets})} · допустимых отметок: {len(targets)}"
         )
+
+    def clear_selected_attendance(self):
+        targets = set()
+        for index in self.matrix.selectionModel().selectedIndexes():
+            if self.matrix.isColumnHidden(index.column()):
+                continue
+            student, pair = index.data(IDENTITY), index.data(PAIR)
+            if student is not None and pair is not None:
+                targets.add((student, pair))
+        if not targets:
+            return
+        changed, mode = self.service.redesign.clear_attendance_cells(targets)
+        if changed:
+            self.update_evidence({pair for _, pair in targets})
+            self.evidence_changed()
+        self.selection_count.setText(TOGGLE_MESSAGES[mode])
 
     def manual(self):
         targets = self.targets()
@@ -368,13 +431,7 @@ class HistoryPane(QWidget):
         api = self.service.redesign
         original = {s.student_id for s in api.get_pair_contexts(pair)}
         dialog = FormDialog(f"Историческая коррекция состава пары #{pair}", self)
-        students = choices(
-            [
-                (f"{s.full_name} · {s.record_book_number} · гр. {s.group_number}", s.student_id)
-                for s in api.list_student_contexts()
-            ],
-            original,
-        )
+        students = student_context_table(api.list_student_contexts(), original)
         reason = QLineEdit()
         dialog.form.addRow("Состав пары (основания присутствия сохраняются)", students)
         dialog.form.addRow("Обязательная причина", reason)
@@ -382,13 +439,19 @@ class HistoryPane(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             guarded(
                 self,
-                lambda: (api.set_pair_roster(pair, checked(students), reason.text()), self.load()),
+                lambda: (
+                    api.set_pair_roster(pair, students.selected_ids(), reason.text()),
+                    self.load(),
+                ),
             )
 
     def revoke(self):
-        batches = [b for b in self.service.redesign.list_manual_batches() if b.revoked_at is None]
+        batches = [b for b in self.service.redesign.list_manual_batches() if b.active_targets]
+        if not batches:
+            self.selection_count.setText("Действующих ручных отметок нет.")
+            return
         labels = [
-            f"#{b.id} · {b.created_at:%d.%m %H:%M} · {len(b.targets)} отметок · {b.reason}"
+            f"#{b.id} · {b.created_at:%d.%m %H:%M} · отметок: {len(b.active_targets)} · {b.reason}"
             for b in batches
         ]
         label, ok = QInputDialog.getItem(

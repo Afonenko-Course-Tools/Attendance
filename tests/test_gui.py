@@ -217,6 +217,7 @@ def test_failed_commit_does_not_display_success_or_raw_details(window, monkeypat
     def fail(*args, **kwargs):
         raise OSError("00112233 /private/attendance.sqlite3 disk full")
 
+    original = window.service.record_scan
     monkeypatch.setattr(window.service, "record_scan", fail)
     window.controller.simulate("00112233")
     window.process_events()
@@ -225,6 +226,9 @@ def test_failed_commit_does_not_display_success_or_raw_details(window, monkeypat
     assert "Не удалось сохранить отметку" in text
     assert "00112233" not in text and "disk full" not in text
     assert "disk full" in window.device_status.text()
+    assert window.controller.blocked and window.controller.pending_count == 1
+    monkeypatch.setattr(window.service, "record_scan", original)
+    assert window.controller.retry_pending()
 
 
 def test_real_mode_has_no_simulator_field(app, tmp_path: Path):
@@ -272,7 +276,7 @@ def test_roster_assignment_applies_only_explicitly_selected_lessons(window, monk
 
     class AcceptedRoster(StudentSelectionDialog):
         def exec(self):
-            self.list_widget.item(0).setCheckState(Qt.CheckState.Checked)
+            self.students.listing.item(0, 0).setCheckState(Qt.CheckState.Checked)
             return QDialog.DialogCode.Accepted
 
     confirmations = []

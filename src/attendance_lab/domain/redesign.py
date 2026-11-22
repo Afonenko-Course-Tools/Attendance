@@ -127,6 +127,17 @@ class ManualBatch:
     created_at: datetime
     revoked_at: datetime | None = None
     session_id: int | None = None
+    revoked_targets: tuple[tuple[str, int, datetime], ...] = ()
+
+    @property
+    def active_targets(self) -> tuple[tuple[str, int], ...]:
+        if self.revoked_at is not None:
+            return ()
+        removed = {(student_id, pair_id) for student_id, pair_id, _ in self.revoked_targets}
+        return tuple(target for target in self.targets if target not in removed)
+
+
+EXCUSED_ABSENCE_REASON = "Отсутствовал по уважительной причине"
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,3 +150,4 @@ class Evidence:
     session_id: int | None = None
     batch_id: int | None = None
     active: bool = True
+    revoked_at: datetime | None = None

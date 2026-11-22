@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scxml xmlns="http://www.w3.org/2005/07/scxml" version="1.0" name="AttendanceWorkspace" datamodel="null" initial="workspace">
+ <parallel id="workspace">
+  <state id="registration" initial="noLesson">
+   <state id="noLesson"><transition event="lesson.selected" target="ready"/><transition event="intent.open" target="opening"/></state>
+   <state id="ready">
+    <transition event="lesson.cleared" target="noLesson"/>
+    <transition event="intent.open" target="opening"/>
+   </state>
+   <state id="opening">
+    <onentry><send event="effect.open"/></onentry>
+    <transition event="result.open.ok" target="open"/>
+    <transition event="result.open.error" target="openFailed"/>
+   </state>
+   <state id="openFailed">
+    <transition event="intent.open" target="opening"/>
+    <transition event="lesson.cleared" target="noLesson"/>
+   </state>
+   <state id="open"><transition event="intent.close" target="closing"/></state>
+   <state id="closing">
+    <onentry><send event="effect.close"/></onentry>
+    <transition event="result.close.ok" target="ready"/>
+    <transition event="result.close.error" target="closeFailed"/>
+   </state>
+   <state id="closeFailed"><transition event="intent.close" target="closing"/></state>
+  </state>
+  <state id="commands" initial="commandIdle">
+   <state id="commandIdle"><transition event="intent.command" target="commandExecuting"/></state>
+   <state id="commandExecuting">
+    <onentry><send event="effect.command"/></onentry>
+    <transition event="result.command.ok result.command.error" target="commandIdle"/>
+   </state>
+  </state>
+  <state id="matching" initial="matchIdle">
+   <state id="matchIdle"><transition event="match.edit" target="matchDraft"/></state>
+   <state id="matchDraft">
+    <transition event="intent.match" target="matchSaving"/>
+    <transition event="intent.defer" target="matchIdle"/>
+   </state>
+   <state id="matchSaving">
+    <onentry><send event="effect.match"/></onentry>
+    <transition event="result.match.ok" target="matchIdle"/>
+    <transition event="result.match.error" target="matchDraft"/>
+   </state>
+  </state>
+  <state id="lifecycle" initial="running">
+   <state id="running"><transition event="intent.shutdown" target="draining"/></state>
+   <state id="draining"><onentry><send event="effect.drain"/></onentry><transition event="operations.drained" target="stopping"/></state>
+   <state id="stopping">
+    <onentry><send event="effect.shutdown"/></onentry>
+    <transition event="result.shutdown.ok" target="terminated"/>
+    <transition event="result.shutdown.error" target="running"/>
+   </state>
+   <state id="terminated"/>
+  </state>
+ </parallel>
+</scxml>

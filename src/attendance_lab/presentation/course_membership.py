@@ -2,8 +2,9 @@
 
 from PySide6.QtWidgets import QDialog, QDialogButtonBox
 
+from attendance_lab.presentation.choice_table import group_table
 from attendance_lab.presentation.common import guarded, plain_label
-from attendance_lab.presentation.preparation import FormDialog, checked, choices
+from attendance_lab.presentation.preparation import FormDialog
 
 
 def edit_line_groups_dialog(parent, service, course_id, roster_id, changed) -> bool:
@@ -25,25 +26,25 @@ def edit_line_groups_dialog(parent, service, course_id, roster_id, changed) -> b
             wrap=True,
         )
     )
-    groups = choices(
+    groups = group_table(
         [
-            (f"{group.specialty_name} · группа {group.number}", group.id)
+            group
             for group in service.redesign.list_groups(course.academic_year_id)
             if group.academic_year_id == course.academic_year_id
             and group.course == course.study_course
         ],
         selected=roster.group_ids,
     )
-    groups.setObjectName("LineAcademicGroups")
+    groups.listing.setObjectName("LineAcademicGroups")
     dialog.form.addRow("Академические группы", groups)
     dialog.finish()
     save = dialog.buttons.button(QDialogButtonBox.StandardButton.Save)
     assert save is not None
-    save.setEnabled(bool(checked(groups)))
-    groups.itemChanged.connect(lambda _item: save.setEnabled(bool(checked(groups))))
+    save.setEnabled(bool(groups.selected_ids()))
+    groups.selection_changed.connect(lambda: save.setEnabled(bool(groups.selected_ids())))
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return False
-    selected_ids = checked(groups)
+    selected_ids = groups.selected_ids()
     if not selected_ids:
         return False
 

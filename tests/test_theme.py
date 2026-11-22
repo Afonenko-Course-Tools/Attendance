@@ -3,6 +3,7 @@
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -11,12 +12,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QTableWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from attendance_lab.presentation.common import STYLE
+from attendance_lab.presentation.common import STYLE, WidgetZoom
+from attendance_lab.presentation.interface_zoom import InterfaceZoom
 from attendance_lab.presentation.public import PublicWindow
 from attendance_lab.presentation.theme import apply_light_theme
 
@@ -47,6 +50,8 @@ def light_app():
 def test_private_inputs_tables_and_popups_override_dark_desktop(light_app):
     window = QMainWindow()
     window.setStyleSheet(STYLE)
+    menu = window.menuBar().addMenu("Файл")
+    submenu = menu.addMenu("Данные")
     central = QWidget()
     layout = QVBoxLayout(central)
     field = QLineEdit("Читаемый текст")
@@ -63,6 +68,9 @@ def test_private_inputs_tables_and_popups_override_dark_desktop(light_app):
     # The offscreen Qt platform reports Unknown even after an explicit request.
     assert light_app.styleHints().colorScheme() != Qt.ColorScheme.Dark
     assert light_app.style().objectName().lower() == "fusion"
+    for menu_widget in (window.menuBar(), menu, submenu):
+        menu_widget.ensurePolished()
+        assert menu_widget.font().pixelSize() == 18
     for widget in (field, table, combo.view(), calendar.calendarWidget()):
         widget.ensurePolished()
         assert widget.palette().color(QPalette.ColorRole.Base).name() == "#ffffff"
@@ -89,3 +97,26 @@ def test_private_dialogs_and_public_window_use_light_backgrounds(light_app):
     public.close()
     message.close()
     file_dialog.close()
+
+
+def test_zoom_shortcuts_resize_text_and_controls_without_reopening(light_app):
+    window = QMainWindow()
+    button = QPushButton("Проверить")
+    window.setCentralWidget(button)
+    zoom = InterfaceZoom(window)
+    WidgetZoom(window, zoom)
+    window.show()
+    window.activateWindow()
+    light_app.processEvents()
+    original_height = button.sizeHint().height()
+    control = Qt.KeyboardModifier.ControlModifier
+    QTest.keyClick(button, Qt.Key.Key_Plus, control)
+    assert zoom.percent == 110 and button.font().pixelSize() == 18
+    assert button.sizeHint().height() > original_height
+    QTest.keyClick(button, Qt.Key.Key_Equal, control)
+    assert zoom.percent == 120
+    QTest.keyClick(button, Qt.Key.Key_Minus, control)
+    assert zoom.percent == 110
+    QTest.keyClick(button, Qt.Key.Key_0, control)
+    assert zoom.percent == 100 and button.sizeHint().height() == original_height
+    window.close()

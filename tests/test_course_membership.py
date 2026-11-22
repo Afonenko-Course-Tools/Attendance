@@ -4,8 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QLabel, QListWidget, QWidget
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QLabel, QTableWidget, QWidget
 
+from attendance_lab.domain.redesign import AcademicGroup
 from attendance_lab.presentation.course_membership import edit_line_groups_dialog
 from attendance_lab.presentation.preparation import FormDialog
 
@@ -18,19 +20,11 @@ def membership():
     )
     roster = SimpleNamespace(id=41, name="Учебная линия 2", group_ids=(102,))
     groups = [
-        SimpleNamespace(
-            id=101, specialty_name="Тестовая специальность", number=1, academic_year_id=2, course=2
-        ),
-        SimpleNamespace(
-            id=102, specialty_name="Другая специальность", number=1, academic_year_id=2, course=2
-        ),
-        SimpleNamespace(
-            id=103, specialty_name="Тестовая специальность", number=1, academic_year_id=2, course=2
-        ),
-        SimpleNamespace(id=104, specialty_name="Чужой год", number=1, academic_year_id=1, course=2),
-        SimpleNamespace(
-            id=105, specialty_name="Чужой курс", number=1, academic_year_id=2, course=3
-        ),
+        AcademicGroup(101, 2, 1, 2, 1, "", "Тестовая специальность"),
+        AcademicGroup(102, 2, 2, 2, 1, "", "Другая специальность"),
+        AcademicGroup(103, 2, 1, 2, 1, "Б", "Тестовая специальность"),
+        AcademicGroup(104, 1, 3, 2, 1, "", "Чужой год"),
+        AcademicGroup(105, 2, 4, 3, 1, "", "Чужой курс"),
     ]
     calls = []
     refreshes = []
@@ -52,18 +46,18 @@ def test_assign_selected_catalog_ids_to_existing_line_and_refresh(membership, mo
     parent, service, course, roster, calls, refreshes = membership
 
     def accept(dialog):
-        listing = dialog.findChild(QListWidget, "LineAcademicGroups")
-        ids = [
-            listing.item(index).data(Qt.ItemDataRole.UserRole) for index in range(listing.count())
-        ]
-        assert ids == [101, 102, 103]
-        assert listing.item(1).checkState() == Qt.CheckState.Checked
-        assert listing.item(0).text() == listing.item(2).text()
-        assert "Другая специальность" in listing.item(1).text()
-        for index in range(listing.count()):
-            listing.item(index).setCheckState(
-                Qt.CheckState.Checked if ids[index] == 103 else Qt.CheckState.Unchecked
-            )
+        listing = dialog.findChild(QTableWidget, "LineAcademicGroups")
+        items = {
+            item.data(Qt.ItemDataRole.UserRole): item
+            for row in range(listing.rowCount())
+            if (item := listing.item(row, 0))
+        }
+        assert items.keys() == {101, 102, 103}
+        assert items[102].checkState() == Qt.CheckState.Checked
+        assert items[101].text() == items[103].text()
+        assert "Другая специальность" in items[102].text()
+        for key, item in items.items():
+            item.setCheckState(Qt.CheckState.Checked if key == 103 else Qt.CheckState.Unchecked)
         assert any(
             "прежним занятиям без зафиксированного состава" in label.text()
             for label in dialog.findChildren(QLabel)
@@ -83,8 +77,8 @@ def test_cancel_does_not_assign_or_refresh(membership, monkeypatch):
     parent, service, course, roster, calls, refreshes = membership
 
     def cancel(dialog):
-        listing = dialog.findChild(QListWidget, "LineAcademicGroups")
-        listing.item(0).setCheckState(Qt.CheckState.Checked)
+        listing = dialog.findChild(QTableWidget, "LineAcademicGroups")
+        listing.item(1, 0).setCheckState(Qt.CheckState.Checked)
         return QDialog.DialogCode.Rejected
 
     monkeypatch.setattr(FormDialog, "exec", cancel)
@@ -126,9 +120,15 @@ def test_empty_group_selection_disables_save(membership, monkeypatch):
     parent, service, course, roster, calls, refreshes = membership
 
     def accept_empty(dialog):
-        listing = dialog.findChild(QListWidget, "LineAcademicGroups")
-        for index in range(listing.count()):
-            listing.item(index).setCheckState(Qt.CheckState.Unchecked)
+        listing = dialog.findChild(QTableWidget, "LineAcademicGroups")
+        row = next(
+            row
+            for row in range(listing.rowCount())
+            if listing.item(row, 0).checkState() == Qt.CheckState.Checked
+        )
+        listing.selectRow(row)
+        QTest.keyClick(listing, Qt.Key.Key_Delete)
+        assert listing.item(row, 0).checkState() == Qt.CheckState.Unchecked
         assert not dialog.buttons.button(QDialogButtonBox.StandardButton.Save).isEnabled()
         return QDialog.DialogCode.Accepted
 

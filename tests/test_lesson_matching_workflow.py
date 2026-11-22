@@ -65,7 +65,9 @@ def test_create_lesson_dialog_adds_selectable_home_entry_and_opens_registration(
     window.schedule.edit_lesson(False)
     lesson = window.service.list_lessons()[0]
     selector = window.workspace.blocks
-    index = next((i for i in range(selector.count()) if lesson.title in selector.itemText(i)), -1)
+    index = next(
+        (i for i, option in enumerate(selector.choices) if lesson.title in option.label), -1
+    )
     assert index >= 0, "Занятие из «Создать занятие» отсутствует на главной странице"
     selector.setCurrentIndex(index)
     window.workspace.open_selected()
@@ -119,10 +121,10 @@ def test_only_today_filter_can_reveal_standalone_lessons_on_other_dates(window):
         title="Завтрашнее занятие",
     )
     window.refresh()
-    assert window.workspace.blocks.count() == 0
+    assert not window.workspace.blocks.choices
     window.workspace.today.setChecked(False)
-    assert window.workspace.blocks.count() == 1
-    assert "Завтрашнее занятие" in window.workspace.blocks.itemText(0)
+    assert len(window.workspace.blocks.choices) == 1
+    assert "Завтрашнее занятие" in window.workspace.blocks.choices[0].label
 
 
 @pytest.mark.parametrize("operation", ["quick", "selected"])
@@ -218,7 +220,7 @@ def test_manual_draft_credits_explicit_viewed_lesson_independent_of_registration
 
 @pytest.mark.parametrize("operation", ["remove", "replace", "cancel"])
 def test_last_bound_card_can_be_corrected_from_home_without_losing_other_card_draft(
-    window, operation
+    window, operation, monkeypatch
 ):
     service = window.service
     service.redesign.apply_import(
@@ -260,33 +262,20 @@ def test_last_bound_card_can_be_corrected_from_home_without_losing_other_card_dr
     assert workspace.pinned_uid == "0022"
     workspace.search.setText("семен")
     workspace.search.setCursorPosition(2)
-    errors = []
-    edited = []
-
-    def edit_dialog():
-        dialog = QApplication.activeModalWidget()
-        try:
-            edited.append(True)
-            assert dialog.card.uid == "0011"
-            dialog.activateWindow()
-            QApplication.processEvents()
-            if operation in ("remove", "cancel"):
-                dialog.remove_binding.setChecked(True)
-                dialog.reject() if operation == "cancel" else dialog.accept()
-            else:
-                dialog.search.setText("борисов")
-                QTest.keyClick(dialog.search, Qt.Key.Key_Down)
-                QTest.keyClick(dialog.list_widget, Qt.Key.Key_Return)
-                assert dialog.result() == 1
-        except Exception as exc:
-            errors.append(exc)
-            if dialog:
-                dialog.reject()
-
-    QTimer.singleShot(0, edit_dialog)
     QTest.keyClick(window, Qt.Key.Key_F4)
-    assert edited, "F4 не открыл исправление карты"
-    assert not errors, errors
+    assert workspace.correction_card.uid == "0011"
+    assert workspace.pinned_uid == "0011"
+    monkeypatch.setattr(
+        "attendance_lab.presentation.lesson_workspace.private_message", lambda *args, **kwargs: True
+    )
+    if operation == "remove":
+        workspace.unbind_button.click()
+    elif operation == "cancel":
+        workspace.defer_button.click()
+    else:
+        workspace.search.setText("борисов")
+        workspace.matches.setCurrentRow(0)
+        workspace.confirm_button.click()
     after = service.lesson_log(lesson.id)[0]
     expected_owner = (
         None
@@ -398,7 +387,8 @@ def test_keyboard_search_and_results_are_visible_after_scrolling_small_window(wi
     workspace.search.setText("семенов")
     scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
     workspace.table.setFocus()
-    window.commands.search()
+    workspace.search_button.click()
+    assert workspace.search.isVisible() and workspace.search.hasFocus()
     top = workspace.search.mapTo(scroll.viewport(), QPoint(0, 0)).y()
     assert 0 <= top <= scroll.viewport().height() - workspace.search.height()
     QTest.keyClick(workspace.search, Qt.Key.Key_Down)

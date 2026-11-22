@@ -833,6 +833,8 @@ def apply_approved(source: Path, approved_path: Path, output: Path, *, mode="rea
                 "binding_changes",
                 "manual_batches",
                 "manual_evidence",
+                "manual_target_revocations",
+                "course_score_variants",
                 "card_evidence",
                 "registration_sessions",
                 "session_target_pairs",

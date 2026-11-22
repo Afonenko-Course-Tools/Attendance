@@ -6,7 +6,13 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from attendance_lab.domain.grading import CalculationParameters, ReportCard, WrittenWork
+from attendance_lab.application.lesson_choices import LessonChoice
+from attendance_lab.domain.grading import (
+    CalculationParameters,
+    ReportCard,
+    WrittenScore,
+    WrittenWork,
+)
 from attendance_lab.domain.models import AttendanceError
 from attendance_lab.domain.redesign import name_key
 
@@ -59,7 +65,17 @@ class GradingSQLiteMixin:
             )
         }
 
-    def gr_save_score(self, student_id, work_id, score):
+    def gr_variants(self, course_id) -> dict[tuple[str, int], str]:
+        return {
+            (row[0], row[1]): row[2]
+            for row in self._connection.execute(
+                "SELECT v.student_id,v.work_id,v.variant FROM course_score_variants v "
+                "JOIN course_works w ON w.id=v.work_id WHERE w.course_id=?",
+                (course_id,),
+            )
+        }
+
+    def gr_save_score(self, student_id, work_id, score: WrittenScore | None):
         if score is None:
             self._connection.execute(
                 "DELETE FROM course_scores WHERE work_id=? AND student_id=?", (work_id, student_id)
@@ -68,7 +84,12 @@ class GradingSQLiteMixin:
             self._connection.execute(
                 "INSERT INTO course_scores VALUES(?,?,?) "
                 "ON CONFLICT(work_id,student_id) DO UPDATE SET score=excluded.score",
-                (work_id, student_id, score),
+                (work_id, student_id, score.score),
+            )
+            self._connection.execute(
+                "INSERT INTO course_score_variants VALUES(?,?,?) "
+                "ON CONFLICT(work_id,student_id) DO UPDATE SET variant=excluded.variant",
+                (work_id, student_id, score.variant),
             )
 
     def gr_reports(self, course_id):
@@ -169,8 +190,15 @@ class GradingSQLiteMixin:
         return row[0], bool(row[1])
 
     def gr_lessons(self, course_id, include_deleted=False):
+        return tuple(
+            (lesson.id, lesson.label)
+            for lesson in self.gr_lesson_choices(course_id, include_deleted=include_deleted)
+        )
+
+    def gr_lesson_choices(self, course_id, *, include_deleted=False) -> tuple[LessonChoice, ...]:
         rows = self._connection.execute(
-            "SELECT l.id,MIN(p.starts_at),b.timezone,t.title,r.name,"
+            "SELECT l.id, b.id, r.id, b.start_slot, MIN(p.starts_at), MAX(p.ends_at), b.timezone,"
+            " t.title, r.name, MAX(p.state = 'open'), MIN(p.state = 'completed'), "
             + DELETED_BLOCK
             + " FROM course_lessons l "
             "JOIN scheduled_blocks b ON b.id=l.block_id "
@@ -180,15 +208,48 @@ class GradingSQLiteMixin:
             "GROUP BY l.id ORDER BY b.day,b.start_slot,l.id",
             (course_id,),
         )
-        return tuple(
-            (
-                row[0],
-                f"{datetime.fromisoformat(row[1]).astimezone(ZoneInfo(row[2])):%d.%m.%Y %H:%M} · {row[3]} · {row[4]}"
-                + (" (удалено)" if row[5] else ""),
+        choices = []
+        for (
+            lesson_id,
+            block_id,
+            roster_id,
+            slot,
+            start,
+            end,
+            zone,
+            topic,
+            group,
+            opened,
+            completed,
+            deleted,
+        ) in rows:
+            if deleted and not include_deleted:
+                continue
+            timezone = ZoneInfo(zone)
+            status = (
+                "deleted"
+                if deleted
+                else "open"
+                if opened
+                else "completed"
+                if completed
+                else "planned"
             )
-            for row in rows
-            if include_deleted or not row[5]
-        )
+            choices.append(
+                LessonChoice(
+                    lesson_id,
+                    block_id,
+                    roster_id,
+                    slot,
+                    datetime.fromisoformat(start).astimezone(timezone),
+                    datetime.fromisoformat(end).astimezone(timezone),
+                    zone,
+                    topic,
+                    group,
+                    status,
+                )
+            )
+        return tuple(choices)
 
     def gr_next_version(self, course_id):
         return (

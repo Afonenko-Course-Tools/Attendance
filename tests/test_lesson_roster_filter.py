@@ -14,6 +14,7 @@ from attendance_lab.domain.redesign import AcademicGroup, TeachingRoster
 from attendance_lab.infrastructure.readers import DemoReader
 from attendance_lab.infrastructure.sqlite import SQLiteRepository
 from attendance_lab.presentation.lesson_filtering import roster_caption
+from attendance_lab.presentation.lesson_picker import LessonPickerDialog
 from attendance_lab.presentation.lesson_workspace import LessonWorkspace
 
 
@@ -85,25 +86,19 @@ def test_caption_uses_only_explicit_saved_groups():
 def test_roster_filter_reduces_popup_and_preserves_block_identity(roster_view):
     widget, service, _, _, first, second, occurrences = roster_view
     assert widget.roster_filter_row.isVisible()
-    assert widget.blocks.count() == 14
-    assert any(
-        "Лаборатория А · Тест · гр. 1" in widget.blocks.itemText(i)
-        for i in range(widget.blocks.count())
-    )
-    assert any(
-        "Лаборатория Б · Тест · гр. 2" in widget.blocks.itemText(i)
-        for i in range(widget.blocks.count())
-    )
+    assert len(widget.blocks.choices) == 14
+    assert any("Лаборатория А · Тест · гр. 1" in option.label for option in widget.blocks.choices)
+    assert any("Лаборатория Б · Тест · гр. 2" in option.label for option in widget.blocks.choices)
     widget.roster_filter.setCurrentIndex(widget.roster_filter.findData(first.id))
-    assert widget.blocks.count() == 12
+    assert len(widget.blocks.choices) == 12
     target = service.redesign.get_block(occurrences[first.id][4].block_id)
     widget.select_lesson(target.pair_ids[0])
     widget.refresh()
     assert widget.roster_filter.currentData() == first.id
     assert widget.viewed_block_id == target.id
     widget.roster_filter.setCurrentIndex(widget.roster_filter.findData(second.id))
-    assert widget.blocks.count() == 2
-    assert all("Лаборатория Б" in widget.blocks.itemText(i) for i in range(widget.blocks.count()))
+    assert len(widget.blocks.choices) == 2
+    assert all("Лаборатория Б" in option.label for option in widget.blocks.choices)
 
 
 def test_filter_navigation_reveals_target_without_switching_active_registration(roster_view):
@@ -114,7 +109,7 @@ def test_filter_navigation_reveals_target_without_switching_active_registration(
     session_id = controller.active_session_id
     widget.roster_filter.setCurrentIndex(widget.roster_filter.findData(first.id))
     widget.today.setChecked(True)
-    assert widget.blocks.count() == 0
+    assert not widget.blocks.choices
     widget.select_lesson(target.pair_ids[0])
     assert widget.roster_filter.currentData() == second.id
     assert not widget.today.isChecked()
@@ -142,28 +137,26 @@ def test_lecture_hides_artificial_rosters_and_restores_course_filter(roster_view
     widget.selected_course_id = course.id
     widget.refresh()
     assert widget.roster_filter_row.isVisible() and widget.roster_filter.currentData() == first.id
-    assert widget.blocks.count() == 12
+    assert len(widget.blocks.choices) == 12
 
 
-def test_long_lesson_popup_is_scrollable_and_keyboard_selection_keeps_ids(roster_view):
+def test_long_lesson_picker_search_and_keyboard_selection_keep_ids(roster_view, monkeypatch):
     widget, _, _, _, first, _, _ = roster_view
     widget.roster_filter.setCurrentIndex(widget.roster_filter.findData(first.id))
-    widget.blocks.showPopup()
-    QApplication.processEvents()
-    popup = widget.blocks.view().window()
-    assert popup.height() <= (widget.blocks.fontMetrics().height() + 12) * 10 + 12
-    assert widget.blocks.view().verticalScrollBar().maximum() > 0
-    available = widget.blocks.screen().availableGeometry()
-    assert available.contains(popup.frameGeometry())
-    widget.blocks.hidePopup()
-    widget.move(available.right() - 100, available.bottom() - 20)
-    widget.blocks.showPopup()
-    QApplication.processEvents()
-    assert available.contains(popup.frameGeometry())
-    index = widget.blocks.currentIndex()
-    expected = widget.blocks.itemData(index + 1)
-    QTest.keyClick(widget.blocks.view(), Qt.Key.Key_Down)
-    QTest.keyClick(widget.blocks.view(), Qt.Key.Key_Return)
-    assert widget.blocks.currentData() == expected
-    assert widget.viewed_block_id == expected
-    widget.blocks.hidePopup()
+    expected = widget.blocks.choices[widget.blocks.currentIndex() + 1]
+
+    def choose(dialog):
+        dialog.show()
+        QApplication.processEvents()
+        assert dialog.height() <= dialog.screen().availableGeometry().height()
+        assert dialog.lessons.verticalScrollBar().maximum() > 0
+        dialog.search.setText(expected.date.isoformat())
+        assert dialog.lessons.rowCount() == 1
+        QTest.keyClick(dialog.search, Qt.Key.Key_Down)
+        QTest.keyClick(dialog.lessons, Qt.Key.Key_Return)
+        return dialog.result()
+
+    monkeypatch.setattr(LessonPickerDialog, "exec", choose)
+    widget.blocks.open_picker()
+    assert widget.blocks.currentData() == expected.id
+    assert widget.viewed_block_id == expected.id

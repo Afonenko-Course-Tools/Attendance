@@ -11,19 +11,28 @@ from tempfile import TemporaryDirectory
 from typing import cast
 from uuid import uuid4
 
-from attendance_lab.application.ports import CardRecord, ScanRecord
+from attendance_lab.application.ports import BindingChangeRecord, CardRecord, ScanRecord
 from attendance_lab.domain.models import AttendanceError, Discipline, Lesson, LessonState, Student
 from attendance_lab.infrastructure.course_sqlite import (
     COURSE_SCHEMA,
     COURSE_TABLE_COLUMNS,
     CourseSQLiteMixin,
 )
-from attendance_lab.infrastructure.grading_schema import GRADING_SCHEMA, GRADING_TABLE_COLUMNS
+from attendance_lab.infrastructure.grading_schema import (
+    GRADING_SCHEMA,
+    GRADING_TABLE_COLUMNS,
+    WRITTEN_VARIANT_SCHEMA,
+)
 from attendance_lab.infrastructure.grading_sqlite import GradingSQLiteMixin
 from attendance_lab.infrastructure.lesson_lifecycle_sqlite import (
     LIFECYCLE_SCHEMA,
     LIFECYCLE_TABLE_COLUMNS,
     LessonLifecycleSQLiteMixin,
+)
+from attendance_lab.infrastructure.operation_sqlite import (
+    OPERATION_SCHEMA,
+    OPERATION_TABLE_COLUMNS,
+    OperationSQLiteMixin,
 )
 from attendance_lab.infrastructure.redesign_sqlite import (
     SCHEMA_V2,
@@ -31,7 +40,17 @@ from attendance_lab.infrastructure.redesign_sqlite import (
     RedesignSQLiteMixin,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 7
+
+_MANUAL_REVOCATION_SCHEMA = """
+CREATE TABLE manual_target_revocations (
+    batch_id INTEGER NOT NULL REFERENCES manual_batches(id),
+    student_id TEXT NOT NULL REFERENCES students(id),
+    pair_id INTEGER NOT NULL REFERENCES lessons(id),
+    revoked_at TEXT NOT NULL,
+    PRIMARY KEY (batch_id, student_id, pair_id)
+);
+"""
 
 _SCHEMA_V3 = """
 CREATE TABLE binding_changes_v3 (
@@ -126,9 +145,13 @@ def _datetime(value: str) -> datetime:
 
 
 class SQLiteRepository(
-    RedesignSQLiteMixin, CourseSQLiteMixin, GradingSQLiteMixin, LessonLifecycleSQLiteMixin
+    RedesignSQLiteMixin,
+    CourseSQLiteMixin,
+    GradingSQLiteMixin,
+    LessonLifecycleSQLiteMixin,
+    OperationSQLiteMixin,
 ):
-    """One main-thread connection. The reader communicates through the controller queue."""
+    """One owner-thread connection. The reader uses the controller's capture-only queue."""
 
     def __init__(self, path: Path, *, mode: str = "real") -> None:
         if mode not in {"real", "demo"}:
@@ -206,6 +229,18 @@ class SQLiteRepository(
                 self._execute_schema(self._connection, GRADING_SCHEMA)
                 self._execute_schema(self._connection, LIFECYCLE_SCHEMA)
                 self._connection.execute("PRAGMA user_version = 4")
+                version = 4
+            if version == 4:
+                self._execute_schema(self._connection, OPERATION_SCHEMA)
+                self._connection.execute("PRAGMA user_version = 5")
+                version = 5
+            if version == 5:
+                self._execute_schema(self._connection, _MANUAL_REVOCATION_SCHEMA)
+                self._connection.execute("PRAGMA user_version = 6")
+                version = 6
+            if version == 6:
+                self._execute_schema(self._connection, WRITTEN_VARIANT_SCHEMA)
+                self._connection.execute("PRAGMA user_version = 7")
             self._validate_database(self._connection)
             self._connection.commit()
         except BaseException:
@@ -272,6 +307,10 @@ class SQLiteRepository(
                     required_objects.update(
                         {"deleted_lessons_by_lesson", "no_duplicate_active_lesson_deletion"}
                     )
+                if version >= 5:
+                    required_objects.update(
+                        {"operation_receipts_no_update", "operation_receipts_no_delete"}
+                    )
                 found_objects = {
                     row[0]
                     for row in connection.execute(
@@ -284,6 +323,17 @@ class SQLiteRepository(
                 required_columns.update(COURSE_TABLE_COLUMNS)
                 required_columns.update(GRADING_TABLE_COLUMNS)
                 required_columns.update(LIFECYCLE_TABLE_COLUMNS)
+            if version >= 5:
+                required_columns.update(OPERATION_TABLE_COLUMNS)
+            if version >= 6:
+                required_columns["manual_target_revocations"] = {
+                    "batch_id",
+                    "student_id",
+                    "pair_id",
+                    "revoked_at",
+                }
+            if version >= 7:
+                required_columns["course_score_variants"] = {"work_id", "student_id", "variant"}
             for table, columns in required_columns.items():
                 found = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
                 if not columns.issubset(found):
@@ -294,6 +344,22 @@ class SQLiteRepository(
                 }
                 if columns["student_id"][3]:
                     raise AttendanceError("Структура базы данных повреждена или неизвестна.")
+            if version >= 5:
+                columns = {
+                    row[1]: row
+                    for row in connection.execute("PRAGMA table_info(operation_receipts)")
+                }
+                if columns["operation_id"][5] != 1 or any(
+                    not columns[name][3] for name in OPERATION_TABLE_COLUMNS["operation_receipts"]
+                ):
+                    raise AttendanceError("Структура подтверждений операций повреждена.")
+                invalid = connection.execute(
+                    "SELECT 1 FROM operation_receipts WHERE length(trim(operation_id)) = 0 "
+                    "OR length(trim(kind)) = 0 OR length(fingerprint) != 64 "
+                    "OR fingerprint GLOB '*[^0-9a-f]*' OR NOT json_valid(result_json) LIMIT 1"
+                ).fetchone()
+                if invalid:
+                    raise AttendanceError("Подтверждения операций повреждены.")
         except sqlite3.DatabaseError as exc:
             raise AttendanceError("Не удалось проверить файл базы данных.") from exc
 
@@ -327,6 +393,26 @@ class SQLiteRepository(
     @staticmethod
     def _discipline(row: sqlite3.Row) -> Discipline:
         return Discipline(row["id"], row["name"], row["description"])
+
+    def list_binding_changes(self, uid: str | None = None) -> list[BindingChangeRecord]:
+        rows = self._connection.execute(
+            "SELECT * FROM binding_changes"
+            + (" WHERE uid = ?" if uid is not None else "")
+            + " ORDER BY id DESC",
+            (uid,) if uid is not None else (),
+        )
+        return [
+            BindingChangeRecord(
+                row["id"],
+                row["uid"],
+                row["previous_student_id"],
+                row["student_id"],
+                _datetime(row["changed_at"]),
+                bool(row["correction"]),
+                row["scope"],
+            )
+            for row in rows
+        ]
 
     @staticmethod
     def _lesson(row: sqlite3.Row) -> Lesson:

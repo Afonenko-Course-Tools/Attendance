@@ -123,6 +123,10 @@ def test_failed_recheck_clears_previously_accepted_preview(importer, tmp_path):
 def test_group_resolution_only_lists_matching_course_and_covers_all_rows(
     importer, tmp_path, monkeypatch
 ):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QTableWidget
+
     from attendance_lab.presentation import import_students
 
     dialog, service, _ = importer
@@ -159,6 +163,12 @@ def test_group_resolution_only_lists_matching_course_and_covers_all_rows(
         assert len(resolver.choices) == 1
         _, choice = resolver.choices[0]
         assert choice.currentData() is None, "Решение не должно приниматься за пользователя"
+        choice.setCurrentIndex(choice.findData(alternate.id))
+        table = resolver.findChild(QTableWidget)
+        table.selectRow(0)
+        QTest.keyClick(table, Qt.Key.Key_Backspace)
+        assert choice.currentData() is None
+        assert not resolver.buttons.button(QDialogButtonBox.StandardButton.Save).isEnabled()
         choice.setCurrentIndex(choice.findData(alternate.id))
         return QDialog.DialogCode.Accepted
 

@@ -62,7 +62,8 @@ class Commands:
     def search(self):
         widget = self.window.tabs.currentWidget()
         if widget is self.window.course_workspace:
-            self.window.course_workspace.tabs.setCurrentWidget(self.window.preparation)
+            if widget.focus_current_search():
+                return
             self.window.preparation.tabs.setCurrentWidget(self.window.students)
             widget = self.window.students
         elif widget is self.window.course_journal:
@@ -75,6 +76,9 @@ class Commands:
             if field is not None:
                 field.setFocus()
                 field.selectAll()
+            return
+        if widget is self.window.workspace:
+            widget.focus_roster_search()
             return
         if hasattr(widget, "open_search"):
             widget.open_search()

@@ -3,12 +3,13 @@
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QWidget
 from test_grading import graded_course, qapp  # noqa: F401
 
 from attendance_lab.domain.grading import CRITERIA, ReportCard
 from attendance_lab.infrastructure.report_topic_catalog import load_report_topic_catalogs
-from attendance_lab.presentation.grading import ReportCardDialog
+from attendance_lab.presentation.grading import GradingPane, ReportCardDialog
+from attendance_lab.presentation.interface_zoom import InterfaceZoom
 
 
 def type_query(editor, text):
@@ -142,3 +143,46 @@ def test_held_checkbox_click_survives_live_results_collapsing(historical_card):
         "Focus-out reflow must not move the click target before release"
     )
     assert not dialog.topic.results.isVisible()
+
+
+def test_report_window_stays_open_with_its_draft_when_another_window_takes_focus(
+    graded_course,  # noqa: F811
+    qapp,  # noqa: F811
+):
+    service, course, first, _ = graded_course
+    pane = GradingPane(service)
+    zoom = InterfaceZoom(pane)
+    pane.interface_zoom = zoom
+    pane.set_context(course.id, first.id, refresh=True)
+    pane.show()
+    pane.report_table.selectRow(0)
+    pane.open_report()
+    dialog = pane.report_dialog
+    assert dialog is not None
+    dialog.resize(420, 340)
+    dialog.topic.setCurrentText("Черновик доклада")
+    dialog.sliders[13].setValue(0)
+    other_window = QWidget()
+    other_window.show()
+    other_window.activateWindow()
+    qapp.processEvents()
+    assert qapp.activeWindow() is other_window
+    assert dialog.windowHandle().transientParent() is None
+    assert dialog.isVisible() and not dialog.isMinimized() and not dialog.isModal()
+    assert dialog.size().toTuple() == (420, 340)
+    assert dialog.topic.currentText() == "Черновик доклада"
+    assert dialog.sliders[13].value() == 0
+    assert dialog.sliders[13].choices.rowCount() == 2
+    dialog.activateWindow()
+    qapp.processEvents()
+    QTest.keyClick(dialog.topic.editor, Qt.Key.Key_Equal, Qt.KeyboardModifier.ControlModifier)
+    assert zoom.percent == 110 and dialog.topic.editor.font().pixelSize() == 18
+    for _ in range(3):
+        QTest.keyClick(dialog.topic.editor, Qt.Key.Key_Plus, Qt.KeyboardModifier.ControlModifier)
+    qapp.processEvents()
+    assert zoom.percent == 140
+    assert dialog.criteria.horizontalScrollBar().maximum() == 0
+    assert all(button.width() >= button.sizeHint().width() for button in dialog.sliders[13].buttons)
+    assert dialog.topic.currentText() == "Черновик доклада"
+    pane.close_report()
+    assert pane.report_dialog is None

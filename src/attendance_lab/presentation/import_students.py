@@ -27,7 +27,15 @@ from PySide6.QtWidgets import (
 
 from attendance_lab.application.service import AttendanceService
 from attendance_lab.domain.redesign import AcademicGroup, ImportPlan, name_key
-from attendance_lab.presentation.common import fill_table, guarded, plain_label, table
+from attendance_lab.presentation.common import (
+    bind_table_clear,
+    fill_table,
+    filter_table,
+    guarded,
+    plain_label,
+    search_field,
+    table,
+)
 
 
 def dialog_buttons(dialog, action):
@@ -42,6 +50,18 @@ def dialog_buttons(dialog, action):
     shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
     shortcut.activated.connect(lambda: buttons.button(QDialogButtonBox.StandardButton.Save).click())
     return buttons
+
+
+def bind_choice_reset(listing, column):
+    def reset():
+        for index in listing.selectionModel().selectedRows():
+            if listing.isRowHidden(index.row()):
+                continue
+            choice = listing.cellWidget(index.row(), column)
+            if isinstance(choice, QComboBox) and choice.isEnabled():
+                choice.setCurrentIndex(0)
+
+    bind_table_clear(listing, reset)
 
 
 @dataclass(frozen=True)
@@ -71,6 +91,7 @@ class ImportGroupsDialog(QDialog):
         listing = table(
             ("Специальность / профиль", "Курс", "Группа", "Студентов", "Вариант в базе")
         )
+        bind_choice_reset(listing, 4)
         fill_table(
             listing,
             [
@@ -134,6 +155,7 @@ class ImportNamesDialog(QDialog):
         )
         tabs = QTabWidget()
         specialties = table(("Название в CSV", "Что сделать при импорте"))
+        bind_choice_reset(specialties, 1)
         names = sorted({row.specialty for row in importer.plan.rows})
         fill_table(specialties, [(name, "") for name in names], names)
         for row, name in enumerate(names):
@@ -153,6 +175,7 @@ class ImportNamesDialog(QDialog):
         self.profiles = table(
             ("Специальность в CSV", "Профилизация в CSV", "Что сделать при импорте")
         )
+        bind_choice_reset(self.profiles, 2)
         tabs.addTab(self.profiles, "Профилизации")
         layout.addWidget(tabs)
         self.buttons = dialog_buttons(self, "Применить названия")
@@ -265,6 +288,8 @@ class ImportPreviewDialog(QDialog):
         layout.addLayout(actions)
         self.status = plain_label(wrap=True)
         layout.addWidget(self.status)
+        self.search = search_field("Строка, ФИО, группа или № зачётки")
+        layout.addWidget(self.search)
         self.tabs = QTabWidget()
         self.preview = table(
             (
@@ -276,8 +301,13 @@ class ImportPreviewDialog(QDialog):
                 "Курс",
                 "Группа",
                 "Зачётная книжка",
-            )
+            ),
+            name="student-import-preview",
+            keys=("source", "ordinal", "name", "specialty", "profile", "year", "group", "record"),
+            sortable=True,
         )
+        self.search.textChanged.connect(self.filter_preview)
+        self.preview.model().layoutChanged.connect(self.filter_preview)
         self.errors_view = QListWidget()
         self.errors_view.setStyleSheet("QListWidget { color: #991b1b; background: #fff7f7; }")
         self.note = QTextEdit()
@@ -406,6 +436,7 @@ class ImportPreviewDialog(QDialog):
             ],
             [r.source_row for r in self.plan.rows],
         )
+        self.filter_preview()
         changes = list(self.plan.changes)
         if skipped:
             changes.insert(0, f"Пустых строк пропущено: {skipped}.")
@@ -418,6 +449,7 @@ class ImportPreviewDialog(QDialog):
             if conflicts
             else "Выбрать варианты групп…"
         )
+
         button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
         button.setEnabled(not self.plan.errors)
         button.setText(f"Импортировать {len(self.plan.rows)} студентов")
@@ -438,6 +470,9 @@ class ImportPreviewDialog(QDialog):
             )
             button.setToolTip("Загрузить проверенный список · Ctrl+Enter")
             self.tabs.setCurrentWidget(self.preview)
+
+    def filter_preview(self, *_):
+        filter_table(self.preview, self.search.text())
 
     def group_conflicts(self):
         if self.plan is None:

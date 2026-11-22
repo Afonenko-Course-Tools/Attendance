@@ -7,6 +7,8 @@ import sys
 
 from redesign_test_support import create_v1_database
 
+from attendance_lab.infrastructure.sqlite import SCHEMA_VERSION
+
 
 def run_migration(path, *args):
     environment = dict(os.environ, QT_QPA_PLATFORM="offscreen")
@@ -26,7 +28,7 @@ def test_headless_cli_migrates_existing_v1_database(tmp_path):
     result = run_migration(path)
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert list(tmp_path.glob("*.before-migration.*.sqlite3"))
 
 

@@ -2,35 +2,12 @@
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
 
-from attendance_lab.application.text_search import TextSearch
+from attendance_lab.application.list_queries import StudentSearch as StudentSearch
 from attendance_lab.application.text_search import normalized as normalized
 
 IDENTITY = Qt.ItemDataRole.UserRole
 PAIR = int(Qt.ItemDataRole.UserRole) + 1
 SORT = int(Qt.ItemDataRole.UserRole) + 2
-
-
-class StudentSearch:
-    def __init__(self, students):
-        self.whole_block = False
-        self.students = list(students)
-        self.index = TextSearch(
-            self.students,
-            text=lambda student: " ".join(
-                str(getattr(student, key, "") or "")
-                for key in (
-                    "full_name",
-                    "record_book_number",
-                    "group_number",
-                    "specialty",
-                    "profile",
-                )
-            ),
-            order=lambda student: student.full_name,
-        )
-
-    def find(self, query):
-        return self.index.find(query)
 
 
 class StudentModel(QAbstractTableModel):
@@ -84,6 +61,8 @@ class StudentModel(QAbstractTableModel):
         student = self.students[index.row()]
         if role == IDENTITY:
             return student.student_id
+        if role == Qt.ItemDataRole.TextAlignmentRole and index.column() == 2:
+            return Qt.AlignmentFlag.AlignCenter
         if index.column() >= len(self.headers):
             pair = self.pair_ids[index.column() - len(self.headers)]
             if role == PAIR:
@@ -122,9 +101,21 @@ class StudentProxy(QSortFilterProxyModel):
         super().__init__(parent)
         self.sort_fields = []
         self.book_column = 1
+        self.matching_ids = None
         self.setSortRole(SORT)
         self.setFilterKeyColumn(-1)
         self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+
+    def filter_by_ids(self, identities):
+        self.matching_ids = identities
+        self.invalidate()
+
+    def filterAcceptsRow(self, row, parent):
+        model = self.sourceModel()
+        identity = model.index(row, 0, parent).data(IDENTITY) if model else None
+        return (
+            self.matching_ids is None or identity in self.matching_ids
+        ) and super().filterAcceptsRow(row, parent)
 
     def set_sort_fields(self, fields):
         self.sort_fields = fields

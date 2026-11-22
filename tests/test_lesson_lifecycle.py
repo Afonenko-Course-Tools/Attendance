@@ -70,6 +70,7 @@ def test_active_registration_rejects_whole_block_atomically(course):
 
 def test_legacy_schedule_deletes_exact_selected_id_after_sort(course, tmp_path, monkeypatch):
     from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QDialog
 
     from attendance_lab.application.controller import AttendanceController
@@ -103,7 +104,6 @@ def test_legacy_schedule_deletes_exact_selected_id_after_sort(course, tmp_path, 
         default_timezone="Europe/Minsk",
     )
     window.event_timer.stop()
-    monkeypatch.setattr(FormDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
     try:
         window.schedule.lessons.sortItems(0, Qt.SortOrder.DescendingOrder)
         row = next(
@@ -112,7 +112,11 @@ def test_legacy_schedule_deletes_exact_selected_id_after_sort(course, tmp_path, 
             if window.schedule.lessons.item(row, 0).data(Qt.ItemDataRole.UserRole) == first.id
         )
         window.schedule.lessons.selectRow(row)
-        window.schedule.delete_selected()
+        monkeypatch.setattr(FormDialog, "exec", lambda self: QDialog.DialogCode.Rejected)
+        QTest.keyClick(window.schedule.lessons, Qt.Key.Key_Backspace)
+        assert not service.lifecycle.deleted_ids()
+        monkeypatch.setattr(FormDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+        QTest.keyClick(window.schedule.lessons, Qt.Key.Key_Delete)
         assert service.lifecycle.deleted_ids() == {first.id}
         assert [lesson.id for lesson in service.list_lessons()] == [second.id]
         service.lifecycle.restore_deletion(service.lifecycle.list_deletions()[0].id)

@@ -3,13 +3,18 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QTableWidgetItem
 
+from attendance_lab.domain.redesign import EXCUSED_ABSENCE_REASON
 
-def update_topic_cell(item, student_name, topic, *, present, missed, observed_only):
+
+def update_topic_cell(item, student_name, topic, *, present, excused, missed, observed_only):
     """Keep a cell's visible mark and explanation in sync after evidence changes."""
-    item.setText("✓" if present else "—" if missed else "")
+    item.setText("✓" if present else "У" if excused else "—" if missed else "")
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     status = (
         "Посещение подтверждено"
         if present
+        else EXCUSED_ABSENCE_REASON
+        if excused
         else "Пропуск"
         if missed
         else "Ожидаемый состав курса ещё не задан"
@@ -18,7 +23,7 @@ def update_topic_cell(item, student_name, topic, *, present, missed, observed_on
     )
     item.setToolTip(
         f"{student_name}\nТема {topic.number}: {topic.title}\n{status}"
-        "\nДвойной щелчок, Enter или Пробел — поставить посещение"
+        "\nДвойной щелчок, Enter или Пробел — поставить или отменить ручную отметку"
     )
 
 

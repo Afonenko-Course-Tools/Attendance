@@ -336,9 +336,10 @@ def test_today_filter_uses_each_lessons_time_zone_at_midnight(course, tmp_path, 
     window.event_timer.stop()
     try:
         assert window.workspace.today.isChecked()
-        assert {
-            window.workspace.blocks.itemData(i) for i in range(window.workspace.blocks.count())
-        } == {utc_today.block_id, minsk_today.block_id}
+        assert {option.id for option in window.workspace.blocks.choices} == {
+            utc_today.block_id,
+            minsk_today.block_id,
+        }
     finally:
         window.close()
         app.processEvents()

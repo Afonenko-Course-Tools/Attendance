@@ -1,125 +1,152 @@
 """Mark journal topic cells using explicit identities and actual lesson instances."""
 
-from zoneinfo import ZoneInfo
-
 from PySide6.QtWidgets import QDialog, QDialogButtonBox
 
-from attendance_lab.domain.models import AttendanceError
-from attendance_lab.presentation.attendance_reasons import DEFAULT_REASON, MANUAL_REASONS
+from attendance_lab.application.journal import (
+    DEFAULT_REASON,
+    JOURNAL_REASONS,
+    TOGGLE_MESSAGES,
+    JournalMarkRequest,
+    JournalOccurrenceChoice,
+    JournalTopicTarget,
+    confirm_journal_mark,
+    prepare_journal_mark,
+)
+from attendance_lab.domain.redesign import EXCUSED_ABSENCE_REASON
 from attendance_lab.presentation.common import guarded, plain_label
+from attendance_lab.presentation.lesson_picker import LessonPicker, LessonPickerOption
 from attendance_lab.presentation.preparation import FormDialog, combo
 
 
-def _instance_label(service, occurrence, rosters):
-    block = service.redesign.get_block(occurrence.block_id)
-    pairs = [service.get_lesson(pair_id) for pair_id in block.pair_ids]
-    zone = ZoneInfo(block.timezone)
-    start = min(pair.starts_at for pair in pairs).astimezone(zone)
-    end = max(pair.ends_at for pair in pairs).astimezone(zone)
+def _instance_label(occurrence: JournalOccurrenceChoice):
+    start, end = occurrence.starts_at, occurrence.ends_at
     finish = end.strftime("%H:%M" if end.date() == start.date() else "%d.%m.%Y %H:%M")
-    return f"{start:%d.%m.%Y %H:%M}–{finish} · {rosters[block.roster_id].name}"
+    return f"{start:%d.%m.%Y %H:%M}–{finish} · {occurrence.roster_name}"
 
 
 def mark_journal_cells(
-    parent, service, course_id, selected_cells, changed, *, reason=DEFAULT_REASON
+    parent,
+    service,
+    course_id,
+    selected_cells,
+    changed,
+    *,
+    reason=DEFAULT_REASON,
+    toggle=False,
+    revoke_only=False,
+    inform=None,
 ) -> bool:
-    """Save missing attendance only; existing attendance is never toggled or revoked."""
+    """Mark selected journal cells or explicitly revoke their manual evidence."""
     if course_id is None or not selected_cells:
         return False
-    requested = frozenset(selected_cells)
+    request = JournalMarkRequest(
+        course_id, frozenset(selected_cells), reason, toggle, revoke_only=revoke_only
+    )
 
     def execute():
-        selected_reason = reason
-        if selected_reason not in MANUAL_REASONS:
-            raise AttendanceError("Выберите причину ручной отметки.")
-        api = service.courses
-        course = api.get_course(course_id)
-        topics = {topic.id: topic for topic in api.list_topics(course.id)}
-        if any(topic_id not in topics for _, topic_id in requested):
-            raise AttendanceError("Выбранная ячейка не относится к этому курсу.")
-        names = {student.id: student.full_name for student in service.list_students()}
-        if any(student_id not in names for student_id, _ in requested):
-            raise AttendanceError("Выбранный студент больше недоступен. Обновите журнал.")
-        selected = requested.difference(api.attendance_projection(course.id))
-        if not selected:
+        prepared = prepare_journal_mark(service, request)
+        selected_reason = prepared.reason
+        if not prepared.cells:
+            if inform is not None and (revoke_only or prepared.mode == "card"):
+                inform(TOGGLE_MESSAGES[prepared.mode])
             return False
-        topic_ids = {topic_id for _, topic_id in selected}
-        lessons = api.list_lessons(course.id)
-        candidates = {
-            topic_id: [lesson for lesson in lessons if lesson.topic_id == topic_id]
-            for topic_id in topic_ids
-        }
-        for topic_id, occurrences in candidates.items():
-            if not occurrences:
-                raise AttendanceError(
-                    f"Для темы {topics[topic_id].number} «{topics[topic_id].title}» "
-                    "ещё нет занятия в расписании. Сначала запланируйте занятие."
-                )
+        revoking = prepared.mode == "revoke"
         target_ids = {
-            topic_id: occurrences[0].id
-            for topic_id, occurrences in candidates.items()
-            if len(occurrences) == 1
+            target.topic_id: target.occurrence_id for target in prepared.automatic_targets
         }
-        if any(len(occurrences) > 1 for occurrences in candidates.values()):
-            dialog = FormDialog("Поставить посещение — выберите занятие", parent)
+        if prepared.requires_choice:
+            operation = "Отмена ручной отметки" if revoking else "Ручная отметка"
+            dialog = FormDialog(f"{operation} — выберите занятие", parent)
             dialog.resize(650, 360)
-            dialog.form.addRow(plain_label(course.name, wrap=True))
-            rosters = {roster.id: roster for roster in api.list_rosters(course.id)}
+            dialog.form.addRow(plain_label(prepared.course_name, wrap=True))
+            if revoke_only:
+                dialog.form.addRow(
+                    plain_label("Выберите занятие для отмены отметок каждой темы.", wrap=True)
+                )
             selectors = {}
-            for topic_id in sorted(topic_ids, key=lambda key: topics[key].number):
-                topic = topics[topic_id]
-                people = sorted(names[student] for student, key in selected if key == topic_id)
+            for topic in prepared.topics:
                 dialog.form.addRow(
                     plain_label(
-                        f"{topic.number}. {topic.title}\nСтуденты: {', '.join(people)}", wrap=True
+                        f"{topic.number}. {topic.title}\nСтуденты: {', '.join(topic.student_names)}",
+                        wrap=True,
                     )
                 )
-                occurrences = candidates[topic_id]
+                occurrences = topic.occurrences
                 if len(occurrences) == 1:
                     dialog.form.addRow(
                         "Занятие",
-                        plain_label(_instance_label(service, occurrences[0], rosters), wrap=True),
+                        plain_label(_instance_label(occurrences[0]), wrap=True),
                     )
-                else:
+                elif len(occurrences) <= 4:
                     selector = combo(
                         [("Выберите дату и группу…", None)]
-                        + [
-                            (_instance_label(service, item, rosters), item.id)
-                            for item in occurrences
-                        ]
+                        + [(_instance_label(item), item.occurrence_id) for item in occurrences]
                     )
-                    selector.setObjectName(f"TopicOccurrence:{topic_id}")
-                    selectors[topic_id] = selector
+                    selector.setObjectName(f"TopicOccurrence:{topic.topic_id}")
+                    selectors[topic.topic_id] = selector
                     dialog.form.addRow("Занятие", selector)
-            reason_control = combo([(value, value) for value in MANUAL_REASONS])
-            reason_control.setCurrentIndex(MANUAL_REASONS.index(selected_reason))
+                else:
+                    picker = LessonPicker(dialog)
+                    picker.replace_choices(
+                        LessonPickerOption(
+                            item.occurrence_id,
+                            item.starts_at.date(),
+                            f"{item.starts_at:%H:%M}–{item.ends_at:%H:%M}",
+                            topic.title,
+                            item.roster_name,
+                            label=_instance_label(item),
+                        )
+                        for item in occurrences
+                    )
+                    picker.setObjectName(f"TopicOccurrence:{topic.topic_id}")
+                    selectors[topic.topic_id] = picker
+                    dialog.form.addRow("Занятие", picker)
+            reason_control = combo([(value, value) for value in JOURNAL_REASONS])
+            reason_control.setCurrentIndex(JOURNAL_REASONS.index(selected_reason))
             reason_control.setObjectName("JournalMarkReason")
-            dialog.form.addRow("Причина", reason_control)
+            if not revoking:
+                dialog.form.addRow("Причина", reason_control)
             dialog.finish()
             save = dialog.buttons.button(QDialogButtonBox.StandardButton.Save)
             assert save is not None
-            save.setText("Поставить посещение")
 
             def update_save(*_):
+                save.setText(
+                    "Отменить ручную отметку"
+                    if revoking
+                    else "Отметить отсутствие"
+                    if reason_control.currentData() == EXCUSED_ABSENCE_REASON
+                    else "Поставить посещение"
+                )
                 save.setEnabled(
                     all(control.currentData() is not None for control in selectors.values())
                 )
 
             for control in selectors.values():
                 control.currentIndexChanged.connect(update_save)
+            reason_control.currentIndexChanged.connect(update_save)
             update_save()
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return False
             target_ids.update({key: control.currentData() for key, control in selectors.items()})
-            if any(target is None for target in target_ids.values()):
-                raise AttendanceError("Явно выберите занятие для каждой отмечаемой темы.")
             selected_reason = reason_control.currentText()
-        # A reader event can confirm a selected topic while the chooser is open.
-        remaining = selected.difference(api.attendance_projection(course.id))
-        if not remaining:
+        result = confirm_journal_mark(
+            service,
+            prepared,
+            tuple(JournalTopicTarget(key, target) for key, target in target_ids.items()),
+            reason=selected_reason,
+        )
+        if not result.changed:
+            if inform is not None and revoke_only:
+                inform(TOGGLE_MESSAGES["card" if result.mode == "card" else "empty"])
             return False
-        api.mark_topics(course.id, remaining, target_ids, selected_reason)
         changed()
+        if inform is not None and (toggle or revoke_only):
+            inform(
+                "Отсутствие по уважительной причине отмечено."
+                if result.mode == "mark" and selected_reason == EXCUSED_ABSENCE_REASON
+                else TOGGLE_MESSAGES[result.mode]
+            )
         return True
 
     return bool(guarded(parent, execute))

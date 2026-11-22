@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from attendance_lab.application.journal import TOGGLE_MESSAGES
+from attendance_lab.domain.redesign import EXCUSED_ABSENCE_REASON
 from attendance_lab.presentation.journal_marking import DEFAULT_REASON, mark_journal_cells
 from attendance_lab.presentation.preparation import FormDialog
 
@@ -117,6 +119,7 @@ def test_multiple_instances_require_explicit_id_and_show_person_date_time_line(
         assert [reason.itemText(i) for i in range(reason.count())] == [
             "был без пропуска",
             "отработал с другой группой",
+            EXCUSED_ABSENCE_REASON,
         ]
         control.setCurrentIndex(index)
         assert save.isEnabled()
@@ -137,6 +140,40 @@ def test_multiple_instances_require_explicit_id_and_show_person_date_time_line(
     }
     assert service.redesign.list_manual_batches()[0].reason == "отработал с другой группой"
     assert changed == [True] and not messages
+
+
+def test_revoke_only_preserves_manual_evidence_in_the_unselected_occurrence(marking, monkeypatch):
+    parent, service, course, _, changed, messages = marking
+    first, second, student = ambiguous(marking)
+    blocks = [service.redesign.get_block(lesson.block_id) for lesson in (first, second)]
+    service.redesign.create_manual_batch(
+        {(student.student_id, pair) for block in blocks for pair in block.pair_ids}, DEFAULT_REASON
+    )
+
+    def choose(dialog):
+        assert "Отмена ручной отметки" in dialog.windowTitle()
+        control = dialog.findChild(QComboBox, f"TopicOccurrence:{first.topic_id}")
+        save = dialog.buttons.button(QDialogButtonBox.StandardButton.Save)
+        assert control.currentData() is None and not save.isEnabled()
+        control.setCurrentIndex(control.findData(second.id))
+        assert save.isEnabled() and dialog.findChild(QComboBox, "JournalMarkReason") is None
+        return QDialog.DialogCode.Accepted
+
+    feedback = []
+    monkeypatch.setattr(FormDialog, "exec", choose)
+    assert mark_journal_cells(
+        parent,
+        service,
+        course.id,
+        {(student.student_id, first.topic_id)},
+        lambda: changed.append(True),
+        revoke_only=True,
+        inform=feedback.append,
+    )
+    assert manual_students(service, blocks[0]) == {student.student_id}
+    assert manual_students(service, blocks[1]) == set()
+    assert changed == [True] and not messages
+    assert feedback == [TOGGLE_MESSAGES["revoke_partial"]]
 
 
 def test_cancelled_instance_choice_does_not_write(marking, monkeypatch):

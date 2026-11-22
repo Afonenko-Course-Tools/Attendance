@@ -11,10 +11,10 @@ def office_toolbar(parent: QWidget | None = None) -> QToolBar:
     toolbar = QToolBar(parent)
     toolbar.setMovable(False)
     toolbar.setFloatable(False)
-    toolbar.setIconSize(QSize(16, 16))
+    toolbar.setIconSize(QSize(20, 20))
     toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
     toolbar.setStyleSheet(
-        "QToolBar { border: 0; spacing: 3px; padding: 0; } QToolButton { padding: 4px 6px; }"
+        "QToolBar { border: 0; spacing: 3px; padding: 0; } QToolButton { padding: 6px 8px; }"
     )
     return toolbar
 
@@ -26,7 +26,7 @@ def tool_action(
     callback: Callable[[], object],
     tooltip: str = "",
 ) -> QAction:
-    source = toolbar.style().standardIcon(icon).pixmap(16, 16).toImage()
+    source = toolbar.style().standardIcon(icon).pixmap(toolbar.iconSize()).toImage()
     image = QImage(source.size(), QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.transparent)
     tint = toolbar.palette().color(QPalette.ColorRole.ButtonText)

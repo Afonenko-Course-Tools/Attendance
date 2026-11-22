@@ -1,10 +1,11 @@
 """Compact lesson controls retain stable targets and historical lecture rosters."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from attendance_lab.application.controller import AttendanceController
@@ -116,14 +117,13 @@ def test_buttons_follow_actual_selection_and_available_evidence(lecture):
     widget, service, _, _, block = lecture
     assert widget.open_button.isEnabled() and not widget.manual_button.isEnabled()
     assert not widget.stop_button.isEnabled()
-    assert not widget.manual_selected_button.isEnabled()
     assert not widget.evidence_button.isEnabled()
+
     assert not widget.correct_button.isEnabled()
     assert not widget.confirm_button.isEnabled()
     widget.table.selectRow(0)
     selected = widget.selected_ids()
     assert widget.manual_button.isEnabled()
-    assert widget.manual_selected_button.isEnabled()
     assert not widget.evidence_button.isEnabled()
     service.redesign.create_manual_batch(
         {(student, block.pair_ids[0]) for student in selected}, "Синтетическое подтверждение"
@@ -133,7 +133,52 @@ def test_buttons_follow_actual_selection_and_available_evidence(lecture):
     assert widget.evidence_button.isEnabled()
     widget.table.clearSelection()
     assert not widget.manual_button.isEnabled()
-    assert not widget.manual_selected_button.isEnabled() and not widget.evidence_button.isEnabled()
+    assert not widget.evidence_button.isEnabled()
+
+
+def test_roster_enter_adds_and_removes_same_attendance(lecture):
+    widget, service, _, _, block = lecture
+    widget.table.setCurrentIndex(widget.proxy.index(0, 0))
+    student_id = next(iter(widget.selected_ids()))
+    widget.table.setFocus()
+    QTest.keyClick(widget.table, Qt.Key.Key_Return)
+    assert service.redesign.active_attendance(student_id, block.pair_ids)
+    assert widget.scope.text() == "Посещение отмечено."
+    QTest.keyClick(widget.table, Qt.Key.Key_Return)
+    assert not service.redesign.active_attendance(student_id, block.pair_ids)
+    assert widget.scope.text() == "Ручная отметка отменена."
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Delete, Qt.Key.Key_Backspace])
+def test_roster_clear_revokes_only_selected_manual_evidence(lecture, key):
+    widget, service, _, _, block = lecture
+    widget.activateWindow()
+    widget.table.setCurrentIndex(widget.proxy.index(0, 0))
+    widget.table.setFocus()
+    QApplication.processEvents()
+    selected = next(iter(widget.selected_ids()))
+    other = widget.proxy.index(1, 0).data(Qt.ItemDataRole.UserRole)
+    QTest.keyClick(widget.table, key)
+    assert not service.redesign.list_manual_batches()
+
+    batch = service.redesign.create_manual_batch(
+        {(student, pair) for student in (selected, other) for pair in block.pair_ids},
+        "Синтетическое подтверждение",
+    )
+    service.bind_card("000000AB", selected)
+    active = service.redesign.open_session(block.id, set(block.pair_ids))
+    service.redesign.record_session_scan(active.id, "000000AB", datetime.now(UTC))
+    service.redesign.close_session(active.id)
+    widget.update_counts()
+    QTest.keyClick(widget.table, key)
+
+    [stored] = service.redesign.list_manual_batches()
+    assert stored.id == batch.id and set(stored.active_targets) == {
+        (other, pair) for pair in block.pair_ids
+    }
+    evidence = service.redesign.active_attendance(selected, block.pair_ids)
+    assert evidence and all(item.uid == "000000AB" for item in evidence)
+    assert "Отметка по карте сохранена" in widget.scope.text()
 
 
 def test_manual_toolbar_requires_explicit_student_and_saves_that_selection(lecture, monkeypatch):
@@ -184,8 +229,7 @@ def test_explicit_search_result_can_be_marked_without_a_card(lecture, monkeypatc
     assert not widget.manual_button.isEnabled()
 
 
-@pytest.mark.parametrize("button", ["manual_button", "manual_selected_button"])
-def test_table_selection_overrides_an_older_search_candidate(lecture, monkeypatch, button):
+def test_table_selection_overrides_an_older_search_candidate(lecture, monkeypatch):
     from PySide6.QtWidgets import QInputDialog
 
     widget, service, _, _, block = lecture
@@ -202,7 +246,7 @@ def test_table_selection_overrides_an_older_search_candidate(lecture, monkeypatc
     table_ids = widget.selected_ids()
     assert table_ids and table_ids != search_ids
     monkeypatch.setattr(QInputDialog, "getItem", lambda *args: ("Выбран в таблице", True))
-    getattr(widget, button).click()
+    widget.manual_button.click()
     assert {
         evidence.student_id
         for evidence in service.redesign.pair_evidence(block.pair_ids[0])
@@ -249,7 +293,6 @@ def test_no_lesson_keeps_unavailable_commands_disabled(tmp_path):
             widget.open_button,
             widget.stop_button,
             widget.manual_button,
-            widget.manual_selected_button,
             widget.evidence_button,
             widget.correct_button,
             widget.confirm_button,
@@ -280,7 +323,6 @@ def test_future_closed_manual_actions_require_registration_and_recheck_draft(lec
     widget.select_lesson(future.pair_ids[0])
     widget.table.selectRow(0)
     assert not widget.manual_button.isEnabled()
-    assert not widget.manual_selected_button.isEnabled()
     assert not widget.manual_allowed((*past.pair_ids, *future.pair_ids))
 
     def unexpected_dialog(*args):
@@ -293,15 +335,28 @@ def test_future_closed_manual_actions_require_registration_and_recheck_draft(lec
     widget.open_button.click()
     widget.table.selectRow(0)
     assert controller.active_session_id is not None
-    assert widget.manual_button.isEnabled() and widget.manual_selected_button.isEnabled()
+    assert widget.manual_button.isEnabled()
     assert widget.manual_allowed((*past.pair_ids, *future.pair_ids))
     widget.start_manual()
     widget.search.setText("Алексей")
     widget.matches.setCurrentRow(0)
     assert widget.manual_mode and widget.confirm_button.isEnabled()
     widget.stop_button.click()
-    assert not widget.manual_button.isEnabled() and not widget.manual_selected_button.isEnabled()
+    assert not widget.manual_button.isEnabled()
     assert not widget.confirm_button.isEnabled()
     widget.matches.setCurrentRow(0)
     widget.confirm_match()
     assert not service.redesign.list_manual_batches()
+
+
+def test_filtered_student_can_be_marked_without_using_card_selection(lecture):
+    widget, service, _, _, block = lecture
+    widget.roster_search.setText("Алексей")
+    assert widget.proxy.rowCount() == 1
+    index = widget.proxy.index(0, 0)
+    identity = index.data(Qt.ItemDataRole.UserRole)
+    widget.table.doubleClicked.emit(index)
+    widget.table.doubleClicked.emit(index)
+    batches = service.redesign.list_manual_batches()
+    assert len(batches) == 1
+    assert set(batches[0].targets) == {(identity, pair) for pair in block.pair_ids}

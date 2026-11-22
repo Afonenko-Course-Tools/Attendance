@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
-    QLineEdit,
+    QMenu,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -20,11 +20,13 @@ from attendance_lab.application.files import CsvPort
 from attendance_lab.application.service import AttendanceService
 from attendance_lab.presentation.attendance_models import StudentSearch, normalized
 from attendance_lab.presentation.common import (
+    TableValue,
     actions,
     fill_table,
     guarded,
     plain_label,
     private_message,
+    search_field,
     table,
 )
 from attendance_lab.presentation.dialogs import (
@@ -33,6 +35,8 @@ from attendance_lab.presentation.dialogs import (
     ImportStudentsDialog,
     StudentDialog,
 )
+from attendance_lab.presentation.import_students import ImportPreviewDialog
+from attendance_lab.presentation.table_columns import TableColumns
 
 
 class StudentsPane(QWidget):
@@ -57,17 +61,21 @@ class StudentsPane(QWidget):
         toolbar = actions(
             ("Добавить студента", lambda: self.edit_student(False)),
             ("Изменить студента", lambda: self.edit_student(True)),
-            ("Импорт CSV…", self.import_students),
             ("Экспорт студентов CSV…", self.export_students),
         )
+        import_button = QPushButton("Импорт CSV…")
+        import_menu = QMenu(import_button)
+        import_menu.addAction("Учебный список с группами…", self.import_academic_students)
+        import_menu.addAction("Список со стабильными ID…", self.import_students)
+        import_button.setMenu(import_menu)
+        toolbar.insertWidget(2, import_button)
         self.unbind_button = QPushButton("Снять привязку карты · Ctrl+U")
         self.unbind_button.setEnabled(False)
         self.unbind_button.clicked.connect(self.unbind_selected_student)
         toolbar.insertWidget(0, self.unbind_button)
         layout.addLayout(toolbar)
         search_bar = QHBoxLayout()
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Поиск: ФИО, группа, специальность или № зачётки · F3")
+        self.search = search_field("ФИО, группа, специальность или № зачётки · F3")
         search_bar.addWidget(self.search, 1)
         self.course = QComboBox()
         self.course.addItem("Все курсы", None)
@@ -75,7 +83,15 @@ class StudentsPane(QWidget):
             self.course.addItem(f"{number} курс", number)
         search_bar.addWidget(self.course)
         layout.addLayout(search_bar)
-        self.students = table(("ФИО", "Курс", "Группа", "Специальность", "№ зачётки", "Карт"))
+        self.students = table(
+            ("ФИО", "Курс", "Группа", "Специальность", "№ зачётки", "Карт"), sortable=True
+        )
+        self.student_columns = TableColumns(
+            self.students,
+            "students",
+            keys=("name", "year", "group", "specialty", "record", "cards"),
+        )
+        self.student_columns.restore_visibility()
         layout.addWidget(self.students, 1)
         note = plain_label(
             "Выберите студента и снимите ошибочную привязку. Чтобы исправить предъявленную карту, нажмите F4 на странице занятия.",
@@ -105,6 +121,10 @@ class StudentsPane(QWidget):
         search = normalized(self.search.text()).strip()
         found = {s.student_id for s in self._search_index.find(search)}
         course = self.course.currentData()
+        card_counts = {}
+        for card in self._cards:
+            if card.student_id:
+                card_counts[card.student_id] = card_counts.get(card.student_id, 0) + 1
         students = [
             s
             for s in self._students_by_id.values()
@@ -127,9 +147,12 @@ class StudentsPane(QWidget):
             [
                 (
                     s.full_name,
-                    self._contexts_by_id[s.id].course or "—"
-                    if s.id in self._contexts_by_id
-                    else "—",
+                    TableValue(
+                        str(study_course)
+                        if (study_course := getattr(self._contexts_by_id.get(s.id), "course", None))
+                        else "—",
+                        study_course or 0,
+                    ),
                     self._contexts_by_id[s.id].group_number or s.group or "—"
                     if s.id in self._contexts_by_id
                     else s.group or "—",
@@ -139,7 +162,7 @@ class StudentsPane(QWidget):
                     self._contexts_by_id[s.id].record_book_number or "—"
                     if s.id in self._contexts_by_id
                     else "—",
-                    sum(card.student_id == s.id for card in self._cards),
+                    card_counts.get(s.id, 0),
                 )
                 for s in students
             ],
@@ -148,8 +171,6 @@ class StudentsPane(QWidget):
         if selected not in {s.id for s in students}:
             self.students.clearSelection()
             self.students.setCurrentCell(-1, -1)
-        for column, width in enumerate((250, 55, 60, 215, 110, 60)):
-            self.students.setColumnWidth(column, width)
         self._student_selection_changed()
 
     def _student_selection_changed(self) -> None:
@@ -233,6 +254,9 @@ class StudentsPane(QWidget):
         dialog = ImportStudentsDialog(self.service, self.files, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.changed()
+
+    def import_academic_students(self) -> None:
+        ImportPreviewDialog(self.service, self.changed, self).exec()
 
     def export_students(self) -> None:
         options = ExportOptionsDialog(self)

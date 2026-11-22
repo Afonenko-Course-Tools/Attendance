@@ -8,6 +8,7 @@ version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "pyside6" },
+    { name = "reactivex" },
 ]
 
 [package.optional-dependencies]
@@ -26,6 +27,7 @@ dev = [
 requires-dist = [
     { name = "pyscard", marker = "sys_platform == 'linux' and extra == 'pcsc'", specifier = ">=2.3.1,<3" },
     { name = "pyside6", specifier = ">=6.11.2,<7" },
+    { name = "reactivex", specifier = ">=6.1.0,<7" },
 ]
 provides-extras = ["pcsc"]
 
@@ -171,6 +173,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+]
+
+[[package]]
+name = "reactivex"
+version = "6.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0a/10/86e89009e2c464b80990b203fd9e0be61b5d27ee47039344568f8f8aa45a/reactivex-6.1.0.tar.gz", hash = "sha256:09c856a3d727a08331e891d4af360b8a0069f34391957f21e417e62ffe81518c", size = 140176, upload-time = "2026-10-24T23:51:26.39Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d3/30/c32480116648235d0f29f932cdf2557b0c5ec0a11abfc338f1948d0510ab/reactivex-6.1.0-py3-none-any.whl", hash = "sha256:9f3519afb08b122b2e2130b8811319f97cd4e2e432cab4a321cae0b3ee516a56", size = 260922, upload-time = "2026-10-24T23:51:25.096Z" },
 ]
 
 [[package]]

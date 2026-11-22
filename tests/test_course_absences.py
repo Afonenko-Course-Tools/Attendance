@@ -5,7 +5,11 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from attendance_lab.application.course_absences import course_absences, expected_student_ids
+from attendance_lab.application.course_absences import (
+    course_absences,
+    expected_student_ids,
+    journal_absences,
+)
 from attendance_lab.application.service import AttendanceService
 from attendance_lab.domain.models import AttendanceError
 from attendance_lab.domain.redesign import TeachingRoster
@@ -116,6 +120,33 @@ def test_unassigned_frozen_seminar_is_unknown_despite_other_rosters_and_scan(sem
     assert result.unresolved_topic_ids == {occurrence.topic_id}
     assert all(not topics for topics in result.expected_topics.values())
     assert all(not topics for topics in result.missed_topics.values())
+
+
+def test_journal_unknown_topics_exclude_confirmed_and_known_expectations(seminar):
+    service, course, roster, students, _ = seminar
+    known = service.courses.schedule(course.id, roster.id, 1, PAST, 1)
+    freeze_legacy(service, known, [students[0].student_id])
+    same_topic = service.courses.schedule(course.id, roster.id, 1, date(2026, 9, 8), 1)
+    freeze_legacy(service, same_topic, [])
+    unassign_occurrence(service, course, same_topic)
+    unknown = service.courses.schedule(course.id, roster.id, 2, date(2026, 9, 15), 1)
+    block = freeze_legacy(service, unknown, [])
+    unassign_occurrence(service, course, unknown)
+    service.redesign.create_manual_batch(
+        {(students[0].student_id, block.pair_ids[0])}, "Учебное посещение"
+    )
+    result = journal_absences(service, course.id, now=NOW)
+    assert result.incomplete
+    assert result.missed_topics[students[0].student_id] == {known.topic_id}
+    assert not result.unresolved_topics[students[0].student_id]
+    assert not result.missed_topics[students[1].student_id]
+    assert result.unresolved_topics[students[1].student_id] == {known.topic_id, unknown.topic_id}
+    supplied = journal_absences(
+        service, course.id, service.courses.attendance_projection(course.id), now=NOW
+    )
+    assert supplied == result
+    with pytest.raises(TypeError):
+        result.unresolved_topics[students[0].student_id] = frozenset()
 
 
 def test_lecture_history_requires_whole_current_course_stream(lab):

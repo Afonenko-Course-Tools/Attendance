@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QModelIndex, QPersistentModelIndex, Qt
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -20,10 +20,13 @@ from attendance_lab.application.files import CsvPort
 from attendance_lab.application.service import AttendanceService
 from attendance_lab.domain.models import Lesson, LogRow, PublicResult
 from attendance_lab.presentation.common import (
+    TableValue,
     fill_table,
+    filter_table,
     guarded,
     local_time,
     plain_label,
+    search_field,
     selected_key,
     table,
 )
@@ -67,6 +70,7 @@ class LogsWindow(QMainWindow):
         self.bind = bind
         self.lesson: Lesson | None = None
         self.rows: list[LogRow] = []
+        self._rows_by_uid: dict[str, LogRow] = {}
         self._last_scan: tuple[int, str, PublicResult] | None = None
         self.setWindowTitle("Приватный журнал занятия — UID видны только преподавателю")
         self.resize(1100, 620)
@@ -85,45 +89,66 @@ class LogsWindow(QMainWindow):
         self.feedback = plain_label(wrap=True)
         self.feedback.hide()
         layout.addWidget(self.feedback)
+        self.search = search_field("UID, ФИО или статус · F3", name="Поиск по журналу считывателя")
+        layout.addWidget(self.search)
+        self.matches = plain_label()
+        self.matches.hide()
+        layout.addWidget(self.matches)
         self.log_table = table(
-            ("Первое предъявление", "Последнее предъявление", "UID", "Студент", "Статус")
+            ("Первое предъявление", "Последнее предъявление", "UID", "Студент", "Статус"),
+            name="reader-log",
+            keys=("first_seen", "last_seen", "uid", "student", "status"),
+            sortable=True,
         )
         self.log_table.setItemDelegate(_FeedbackDelegate(self.log_table))
         layout.addWidget(self.log_table, 1)
         toolbar = office_toolbar(self)
         self.bind_action = tool_action(
             toolbar,
-            "Привязать карту",
+            "Привязать карту…",
             QStyle.StandardPixmap.SP_DialogApplyButton,
-            lambda: self._bind(False),
-        )
-        self.correct_action = tool_action(
-            toolbar,
-            "Исправить привязку",
-            QStyle.StandardPixmap.SP_FileDialogDetailedView,
-            lambda: self._bind(True),
+            self._bind,
         )
         self.export_action = tool_action(
             toolbar,
-            "Экспорт CSV",
+            "Экспорт всего журнала CSV",
             QStyle.StandardPixmap.SP_DialogSaveButton,
             self.export,
         )
         layout.addWidget(toolbar)
         self.log_table.itemSelectionChanged.connect(self.update_actions)
+        self.log_table.model().layoutChanged.connect(self.filter_rows)
+        self.search.textChanged.connect(self.filter_rows)
+        self.search_shortcut = QShortcut(QKeySequence("F3"), self)
+        self.search_shortcut.activated.connect(self.focus_search)
         self.update_actions()
         self.setCentralWidget(central)
 
     def update_actions(self) -> None:
         selected = selected_key(self.log_table)
-        self.bind_action.setEnabled(self.lesson is not None and selected is not None)
-        self.correct_action.setEnabled(self.lesson is not None and selected is not None)
+        row = self._rows_by_uid.get(str(selected)) if selected is not None else None
+        self.bind_action.setText(
+            "Изменить привязку…" if row is not None and row.student_id else "Привязать карту…"
+        )
+        self.bind_action.setEnabled(self.lesson is not None and row is not None)
         self.export_action.setEnabled(self.lesson is not None and bool(self.rows))
 
-    def _bind(self, correction: bool) -> None:
+    def _bind(self) -> None:
         uid = selected_key(self.log_table)
-        if uid is not None:
-            self.bind(str(uid), correction)
+        row = self._rows_by_uid.get(str(uid)) if uid is not None else None
+        if row is not None:
+            self.bind(row.uid, row.student_id is not None)
+
+    def focus_search(self) -> None:
+        self.search.setFocus()
+        self.search.selectAll()
+
+    def filter_rows(self, *_) -> None:
+        query = self.search.text()
+        count = filter_table(self.log_table, query, columns=(2, 3, 4))
+        self.matches.setText(f"Показано {count} из {len(self.rows)}")
+        self.matches.setVisible(bool(query.strip()))
+        self.update_actions()
 
     def set_context(
         self, lesson: Lesson | None, label: str, active_label: str, reader_status: str
@@ -139,13 +164,14 @@ class LogsWindow(QMainWindow):
 
     def refresh(self) -> None:
         self.rows = self.service.lesson_log(self.lesson.id) if self.lesson else []
+        self._rows_by_uid = {row.uid: row for row in self.rows}
         timezone = self.lesson.timezone if self.lesson else None
         fill_table(
             self.log_table,
             [
                 (
-                    local_time(row.first_seen, timezone),
-                    local_time(row.last_seen, timezone),
+                    TableValue(local_time(row.first_seen, timezone), row.first_seen),
+                    TableValue(local_time(row.last_seen, timezone), row.last_seen),
                     row.uid,
                     row.full_name or "Не сопоставлена",
                     "Не сопоставлена"
@@ -166,8 +192,8 @@ class LogsWindow(QMainWindow):
             )
         else:
             self.counts.clear()
+        self.filter_rows()
         self._apply_feedback()
-        self.update_actions()
 
     def show_scan(self, lesson_id: int, uid: str, result: PublicResult) -> None:
         """Highlight the latest committed attempt, without adding a log row."""
@@ -190,8 +216,9 @@ class LogsWindow(QMainWindow):
             "border-radius: 6px; font-weight: 600;"
         )
         self.feedback.show()
-        for index, row in enumerate(self.rows):
-            if row.uid == uid:
+        for index in range(self.log_table.rowCount()):
+            identity = self.log_table.item(index, 0)
+            if identity is not None and identity.data(Qt.ItemDataRole.UserRole) == uid:
                 for column in range(self.log_table.columnCount()):
                     item = self.log_table.item(index, column)
                     if item is not None:

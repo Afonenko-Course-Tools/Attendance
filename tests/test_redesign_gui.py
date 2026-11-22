@@ -269,6 +269,7 @@ def test_history_manual_revoke_restores_authoritative_baselines_and_selection(tm
     from datetime import UTC, datetime, timedelta
 
     from PySide6.QtCore import QItemSelectionModel
+    from PySide6.QtTest import QTest
 
     from attendance_lab.application.service import AttendanceService
     from attendance_lab.infrastructure.sqlite import SQLiteRepository
@@ -313,6 +314,33 @@ def test_history_manual_revoke_restores_authoritative_baselines_and_selection(tm
     assert {r.student.id: r.cells for r in pane.model.report.rows} == baseline
     assert pane.targets() == {(student.id, first.id)}
     assert not resets
+
+    service.redesign.create_manual_batch(
+        {
+            (student.id, first.id),
+            (student.id, second.id),
+            (other.id, first.id),
+            (other.id, second.id),
+        },
+        "Проверка выбранных ячеек",
+    )
+    pane.update_evidence()
+    other_row = next(
+        i for i, item in enumerate(pane.model.report.rows) if item.student.id == other.id
+    )
+    pane.matrix.selectionModel().select(
+        pane.proxy.mapFromSource(pane.model.index(other_row, 8)),
+        QItemSelectionModel.SelectionFlag.Select,
+    )
+    pane.activateWindow()
+    pane.matrix.setFocus()
+    app.processEvents()
+    QTest.keyClick(pane.matrix, Qt.Key.Key_Delete)
+    assert set(service.redesign.list_manual_batches()[-1].active_targets) == {
+        (student.id, second.id),
+        (other.id, first.id),
+    }
+    assert "Ручная отметка отменена" in pane.selection_count.text()
     pane.close()
     service.close()
 
@@ -320,13 +348,14 @@ def test_history_manual_revoke_restores_authoritative_baselines_and_selection(tm
 def test_enrollment_editor_preserves_current_selection_and_filters_year(monkeypatch):
     from PySide6.QtWidgets import QFormLayout, QWidget
 
-    from attendance_lab.presentation.preparation import PreparationPane, checked
+    from attendance_lab.domain.redesign import AcademicGroup
+    from attendance_lab.presentation.preparation import PreparationPane
 
     app = QApplication.instance() or QApplication([])
     groups = [
-        SimpleNamespace(id=11, academic_year_id=1, specialty_name="Ф", course=1, number=1),
-        SimpleNamespace(id=12, academic_year_id=1, specialty_name="Ф", course=1, number=2),
-        SimpleNamespace(id=21, academic_year_id=2, specialty_name="Ф", course=2, number=1),
+        AcademicGroup(11, 1, 1, 1, 1, specialty_name="Ф"),
+        AcademicGroup(12, 1, 1, 1, 2, specialty_name="Ф"),
+        AcademicGroup(21, 2, 1, 2, 1, specialty_name="Ф"),
     ]
     api = SimpleNamespace(
         list_years=lambda: [
@@ -353,14 +382,14 @@ def test_enrollment_editor_preserves_current_selection_and_filters_year(monkeypa
     discipline = dialog.form.itemAt(0, field).widget()
     year = dialog.form.itemAt(1, field).widget()
     choices = dialog.form.itemAt(2, field).widget()
-    assert choices.count() == 2
-    assert checked(choices) == {11}
+    assert choices.listing.rowCount() == 2
+    assert choices.selected_ids() == {11}
     discipline.setCurrentIndex(1)
-    assert checked(choices) == {12}
+    assert choices.selected_ids() == {12}
     year.setCurrentIndex(1)
-    assert choices.count() == 1
-    assert checked(choices) == set()
+    assert choices.listing.rowCount() == 1
+    assert choices.selected_ids() == set()
     discipline.setCurrentIndex(0)
-    assert checked(choices) == {21}
+    assert choices.selected_ids() == {21}
     pane.close()
     assert app is not None

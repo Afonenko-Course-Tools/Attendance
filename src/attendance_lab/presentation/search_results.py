@@ -1,7 +1,9 @@
 """Shared search/list keyboard interaction without domain or persistence logic."""
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtWidgets import QAbstractItemView, QLineEdit, QListWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QListWidget, QVBoxLayout, QWidget
+
+from attendance_lab.presentation.common import search_field
 
 
 class SearchResultsPane(QWidget):
@@ -11,7 +13,7 @@ class SearchResultsPane(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.search = QLineEdit()
+        self.search = search_field("Поиск")
         self.results = QListWidget()
         self.results.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         layout.addWidget(self.search)

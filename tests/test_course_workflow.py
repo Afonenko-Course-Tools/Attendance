@@ -182,3 +182,55 @@ def test_course_dimensions_locked_by_roster_and_roster_not_shared(course):
     )
     with pytest.raises(AttendanceError):
         service.courses.add_roster(other.id, roster.id)
+
+
+@pytest.mark.parametrize("with_members", [False, True])
+def test_copy_course_preserves_historical_explicit_roster_without_inventing_groups(
+    course, with_members
+):
+    from dataclasses import replace
+
+    service, original, roster = course
+    members = (service.list_students()[0].id,) if with_members else ()
+    with service.repository.transaction():
+        historical = service.repository.rd_save_roster(
+            replace(
+                roster,
+                id=0,
+                name="Исторический состав",
+                mode="students",
+                group_ids=(),
+                student_ids=members,
+            )
+        )
+        service.courses.add_roster(original.id, historical.id)
+    lesson = service.courses.schedule(original.id, historical.id, 1, date(2026, 9, 1), 1)
+    if members:
+        block = service.redesign.get_block(lesson.block_id)
+        service.redesign.create_manual_batch(
+            {(members[0], pair) for pair in block.pair_ids}, "Исторический факт"
+        )
+    before = service.redesign._roster(historical.id)
+    copied = service.courses.copy_course(original.id, original.academic_year_id, 2, "Копия")
+    copied_roster = next(
+        item for item in service.courses.list_rosters(copied.id) if item.name == historical.name
+    )
+    assert copied_roster == replace(before, id=copied_roster.id, semester=2)
+    assert copied_roster.id != historical.id
+    assert not copied_roster.group_ids
+    assert service.redesign._roster(historical.id) == before
+    assert not service.courses.list_lessons(copied.id)
+    assert not service.courses.attendance_projection(copied.id)
+    # This compatibility path is only for copying already stored history.
+    with pytest.raises(AttendanceError, match="Выберите группы"):
+        service.redesign.save_roster(
+            original.discipline_id,
+            original.academic_year_id,
+            2,
+            "Новый без группы",
+            original.kind,
+            original.duration,
+            "students",
+            set(),
+            set(members),
+        )

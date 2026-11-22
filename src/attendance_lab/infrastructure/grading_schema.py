@@ -32,3 +32,13 @@ GRADING_TABLE_COLUMNS: dict[str, set[str]] = {
     "course_calculations": set("course_id version parameters applied_at".split()),
     "calculation_templates": set("name parameters".split()),
 }
+
+WRITTEN_VARIANT_SCHEMA = """
+CREATE TABLE course_score_variants (
+ work_id INTEGER NOT NULL,
+ student_id TEXT NOT NULL,
+ variant TEXT NOT NULL CHECK(length(trim(variant))>0),
+ PRIMARY KEY(work_id,student_id),
+ FOREIGN KEY(work_id,student_id) REFERENCES course_scores(work_id,student_id) ON DELETE CASCADE
+);
+"""

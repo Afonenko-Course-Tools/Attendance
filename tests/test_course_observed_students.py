@@ -6,6 +6,7 @@ import pytest
 
 from attendance_lab.application.course_absences import course_absences, expected_student_ids
 from attendance_lab.application.service import AttendanceService
+from attendance_lab.domain.grading import WrittenScore
 from attendance_lab.domain.models import AttendanceError
 from attendance_lab.domain.redesign import TeachingRoster
 from attendance_lab.infrastructure.sqlite import SQLiteRepository
@@ -198,7 +199,9 @@ def test_observed_export_preserves_real_enrolled_zero_without_changing_default_p
     service.courses.add_groups(course.id, {students[0].group_id})
     scan(service, block, "0000F003", students[0].student_id)
     work = service.grading.add_work(course.id, "Контрольная", 20)
-    service.grading.save_scores(course.id, {(students[0].student_id, work.id): 0})
+    service.grading.save_scores(
+        course.id, {(students[0].student_id, work.id): WrittenScore(0, "1")}
+    )
     headers, default_rows = service.grading.export_projection(course.id)
     _, observed_rows = service.grading.export_projection(course.id, observed_only=True)
     assert len(default_rows) == 2 and len(observed_rows) == 1

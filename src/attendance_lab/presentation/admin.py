@@ -32,7 +32,7 @@ from attendance_lab.application.files import CsvPort
 from attendance_lab.application.service import AttendanceService
 from attendance_lab.presentation.commands import Commands
 from attendance_lab.presentation.common import (
-    STYLE,
+    WidgetZoom,
     actions,
     guarded,
     lesson_label,
@@ -41,6 +41,7 @@ from attendance_lab.presentation.common import (
 )
 from attendance_lab.presentation.course_workspace import CourseWorkspace
 from attendance_lab.presentation.history import HistoryPane
+from attendance_lab.presentation.interface_zoom import InterfaceZoom
 from attendance_lab.presentation.lesson_workspace import LessonWorkspace
 from attendance_lab.presentation.logs import LogsWindow
 from attendance_lab.presentation.preparation import PreparationPane
@@ -76,8 +77,9 @@ class MainWindow(QMainWindow):
             + ("ИМИТАТОР · тестовая база" if demo else "Приватное управление")
         )
         self.resize(1280, 800)
-        self.setMinimumSize(980, 720)
-        self.setStyleSheet(STYLE)
+        self.setMinimumSize(980, 640)
+        self.interface_zoom = InterfaceZoom(self)
+        WidgetZoom(self, self.interface_zoom)
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(10, 6, 10, 6)
@@ -121,13 +123,14 @@ class MainWindow(QMainWindow):
             self.registration_changed,
             self,
             open_lesson=self.open_registration,
-            edit_card=self.students.bind_uid,
         )
+        self.interface_zoom.changed.connect(self._resize_scan_feedback)
         self.preparation = PreparationPane(
             service, self.refresh, self.schedule, self.students, self
         )
         self.history = HistoryPane(service, self)
         self.workspace.evidence_changed = self.refresh_evidence
+        self.workspace.binding_changed = self.card_binding_changed
         self.students.binding_changed = self.card_binding_changed
         self.history.evidence_changed = self.refresh_evidence
         self.tabs.addTab(self.workspace, "Занятие")
@@ -148,6 +151,7 @@ class MainWindow(QMainWindow):
         self.course_journal = attendance
         self.tabs.addTab(attendance, "Посещаемость")
         self.grading_page = self.course_workspace.grading
+        self.grading_page.interface_zoom = self.interface_zoom
         self.tabs.addTab(self.grading_page, "Оценки")
         self.tabs.addTab(self.course_workspace, "Курс")
         self.history.setWindowFlag(Qt.WindowType.Window, True)
@@ -163,7 +167,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.public_window = PublicWindow()
         self.logs_window = LogsWindow(service, files, self.students.bind_uid)
-        self.logs_window.setStyleSheet(STYLE)
+        WidgetZoom(self.logs_window, self.interface_zoom)
         self._menus()
         self.commands = Commands(self)
         self.event_timer = QTimer(self)
@@ -185,7 +189,7 @@ class MainWindow(QMainWindow):
             file_menu,
             "Импорт списка студентов…",
             QStyle.StandardPixmap.SP_DirOpenIcon,
-            self.preparation.import_csv,
+            self.students.import_academic_students,
         )
         self.export_action = action(
             file_menu,
@@ -206,6 +210,13 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         action(file_menu, "Выход", QStyle.StandardPixmap.SP_DialogCloseButton, self.close)
         view_menu = self.menuBar().addMenu("Вид")
+        fullscreen = view_menu.addAction("Полноэкранный режим")
+        fullscreen.setShortcut("F11")
+        fullscreen.setCheckable(True)
+        fullscreen.triggered.connect(
+            lambda: self.showMaximized() if self.isFullScreen() else self.showFullScreen()
+        )
+        view_menu.aboutToShow.connect(lambda: fullscreen.setChecked(self.isFullScreen()))
         action(view_menu, "Публичное окно", QStyle.StandardPixmap.SP_ComputerIcon, self.show_public)
         action(
             view_menu,
@@ -213,6 +224,12 @@ class MainWindow(QMainWindow):
             QStyle.StandardPixmap.SP_TitleBarMaxButton,
             self.toggle_fullscreen,
         )
+        zoom = self.interface_zoom
+        zoom_menu = view_menu.addMenu("Масштаб интерфейса · 100 %")
+        zoom.changed.connect(lambda: zoom_menu.setTitle(f"Масштаб интерфейса · {zoom.percent} %"))
+        zoom_menu.addAction("Увеличить · Ctrl++", zoom.zoomIn)
+        zoom_menu.addAction("Уменьшить · Ctrl+-", zoom.zoomOut)
+        zoom_menu.addAction("Сбросить · Ctrl+0", zoom.reset)
         service_menu = self.menuBar().addMenu("Сервис")
         action(
             service_menu,
@@ -236,6 +253,9 @@ class MainWindow(QMainWindow):
         )
         self.workspace.blocks.currentIndexChanged.connect(self._refresh_context)
         self.tabs.currentChanged.connect(self._refresh_context)
+
+    def _resize_scan_feedback(self) -> None:
+        self.workspace.last_card_label.setFixedHeight(self.interface_zoom.scale_pixels(44))
 
     def show_course_members(self) -> None:
         self.tabs.setCurrentWidget(self.course_workspace)
@@ -692,6 +712,7 @@ class MainWindow(QMainWindow):
         self._closing = True
         self.public_window.close()
         self.logs_window.close()
+        self.grading_page.close_report()
         self.grading_page.coefficient_dialog.close()
         self.history.close()
         self.preparation.schedule_window.close()

@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
@@ -35,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from attendance_lab.domain.models import CardInfo, Discipline, Lesson, Student
 from attendance_lab.presentation.attendance_models import StudentSearch, normalized
+from attendance_lab.presentation.choice_table import ChoiceTable
 from attendance_lab.presentation.search_results import SearchResultsPane
 
 if TYPE_CHECKING:
@@ -305,58 +305,19 @@ class StudentSelectionDialog(QDialog):
         self.resize(660, 540)
         layout = QVBoxLayout(self)
         layout.addWidget(_label("Отметьте ожидаемых участников. Поиск не сбрасывает выбор."))
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Поиск по ФИО, группе или ID")
-        layout.addWidget(self.search)
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        for student in sorted(students, key=lambda item: (item.full_name.casefold(), item.id)):
-            item = QListWidgetItem(_student_text(student), self.list_widget)
-            item.setData(Qt.ItemDataRole.UserRole, student.id)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked if student.id in selected_ids else Qt.CheckState.Unchecked
-            )
-        layout.addWidget(self.list_widget, 1)
-        selection = QHBoxLayout()
-        select = QPushButton("Выбрать видимых")
-        clear = QPushButton("Снять выбор видимых")
-        select.clicked.connect(lambda: self._set_visible(Qt.CheckState.Checked))
-        clear.clicked.connect(lambda: self._set_visible(Qt.CheckState.Unchecked))
-        selection.addWidget(select)
-        selection.addWidget(clear)
-        self.count_label = _label()
-        selection.addWidget(self.count_label, 1)
-        layout.addLayout(selection)
+        self.students = ChoiceTable(
+            ("ФИО", "Группа", "ID"),
+            [(student.id, (student.full_name, student.group, student.id)) for student in students],
+            selected_ids,
+            name="legacy-student-picker",
+            keys=("name", "group", "id"),
+            placeholder="ФИО, группа или ID студента",
+        )
+        layout.addWidget(self.students, 1)
         layout.addWidget(_buttons(self, "Применить состав"))
-        self.search.textChanged.connect(self._filter)
-        self.list_widget.itemChanged.connect(self._update_count)
-        self._update_count()
-
-    def _filter(self, text: str) -> None:
-        text = text.casefold().strip()
-        for index in range(self.list_widget.count()):
-            item = self.list_widget.item(index)
-            item.setHidden(text not in item.text().casefold())
-
-    def _set_visible(self, state: Qt.CheckState) -> None:
-        self.list_widget.blockSignals(True)
-        for index in range(self.list_widget.count()):
-            item = self.list_widget.item(index)
-            if not item.isHidden():
-                item.setCheckState(state)
-        self.list_widget.blockSignals(False)
-        self._update_count()
-
-    def _update_count(self, *_args: Any) -> None:
-        self.count_label.setText(f"Выбрано: {len(self.selected_ids())}")
 
     def selected_ids(self) -> set[str]:
-        return {
-            str(self.list_widget.item(index).data(Qt.ItemDataRole.UserRole))
-            for index in range(self.list_widget.count())
-            if self.list_widget.item(index).checkState() == Qt.CheckState.Checked
-        }
+        return {str(student_id) for student_id in self.students.selected_ids()}
 
 
 class ImportStudentsDialog(QDialog):
@@ -632,7 +593,7 @@ class BindingDialog(QDialog):
 
     def _filter(self, text: str) -> None:
         query = normalized(text).strip()
-        found = {s.student_id if self.contexts else s.id for s in self.index.find(query)}
+        found = {getattr(s, "student_id", getattr(s, "id", None)) for s in self.index.find(query)}
         for index in range(self.list_widget.count()):
             item = self.list_widget.item(index)
             student_id = item.data(Qt.ItemDataRole.UserRole)

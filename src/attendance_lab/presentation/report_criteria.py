@@ -3,10 +3,11 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -91,12 +92,10 @@ class CriterionLevels(QWidget):
         title = QLabel(criterion.title)
         title.setWordWrap(True)
         self.title = title
-        font = title.font()
-        font.setPixelSize(14)
-        title.setFont(font)
         layout.addWidget(title)
-        choices = QHBoxLayout()
-        choices.setSpacing(5)
+        self.choices = QGridLayout()
+        self.choices.setSpacing(5)
+        self._columns = criterion.steps
         labels = (
             ("Хуже", "Нейтрально", "Лучше")
             if criterion.steps == 3
@@ -112,18 +111,47 @@ class CriterionLevels(QWidget):
             button.setStyleSheet(level_styles(LEVEL_COLORS[color_index]))
             button.setCheckable(True)
             button.setAutoDefault(False)
-            button.setMinimumHeight(44)
+            button.setMinimumHeight(48)
             button.setMinimumWidth(0)
             button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setAccessibleName(f"{criterion.title}: {text.replace(chr(10), ' ')}")
             button.setToolTip(text.replace("\n", " ") + " · ← → изменить, ↑ ↓ другой критерий")
             self.group.addButton(button, index)
-            choices.addWidget(button, 1)
+            self.choices.addWidget(button, 0, index)
+            self.choices.setColumnStretch(index, 1)
             self.buttons.append(button)
         self.setValue(value)
         self.group.idClicked.connect(self._choose)
-        layout.addLayout(choices)
+        layout.addLayout(self.choices)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._layout_choices()
+
+    def event(self, event):
+        if event.type() == QEvent.Type.LayoutRequest:
+            self._layout_choices()
+        return super().event(event)
+
+    def _layout_choices(self):
+        spacing = self.choices.horizontalSpacing()
+        button_width = max(button.sizeHint().width() for button in self.buttons)
+        columns = next(
+            (
+                count
+                for count in range(self.criterion.steps, 2, -2)
+                if count * button_width + (count - 1) * spacing <= self.width()
+            ),
+            2,
+        )
+        if columns != self._columns:
+            self._columns = columns
+            for index in range(len(self.buttons)):
+                self.choices.setColumnStretch(index, int(index < columns))
+            for index, button in enumerate(self.buttons):
+                row, column = divmod(index, columns)
+                self.choices.addWidget(button, row, column)
 
     def value(self) -> int:
         return self._value
@@ -190,7 +218,9 @@ class ReportCriteriaPanel(QScrollArea):
 
     levelsChanged = Signal()
 
-    def __init__(self, levels: Sequence[int] | None = None, written=False, parent=None):
+    def __init__(
+        self, levels: Sequence[int] | None = None, written=False, parent=None, *, header=None
+    ):
         super().__init__(parent)
         initial = tuple(levels) if levels is not None else tuple(c.steps // 2 for c in CRITERIA)
         if len(initial) != len(CRITERIA):
@@ -216,15 +246,13 @@ class ReportCriteriaPanel(QScrollArea):
         body = QVBoxLayout(content)
         body.setContentsMargins(4, 4, 4, 4)
         body.setSpacing(8)
+        if header is not None:
+            body.addWidget(header)
         hint = QLabel("Нажмите нужный уровень · ← → уровень · ↑ ↓ критерий")
         hint.setWordWrap(True)
         body.addWidget(hint)
-        self.oral_toggle, self.oral_body = self._section(
-            body, "Устное выступление · 5 критериев", False
-        )
-        self.written_toggle, self.written_body = self._section(
-            body, "Письменный реферат · 13 критериев", True
-        )
+        self.oral_toggle, self.oral_body = self._section(body, "Устное выступление", False)
+        self.written_toggle, self.written_body = self._section(body, "Письменный реферат", True)
         self.written_notice = QLabel(
             "Без реферата: эти критерии не учитываются. Выбранные уровни сохранены."
         )
@@ -248,7 +276,7 @@ class ReportCriteriaPanel(QScrollArea):
         toggle.setText(title)
         toggle.setCheckable(True)
         toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        toggle.setMinimumHeight(36)
+        toggle.setMinimumHeight(40)
         toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         section = QWidget()
         rows = QVBoxLayout(section)

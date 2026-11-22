@@ -1,4 +1,4 @@
-"""Compact lesson selectors and labels based only on stored teaching rosters."""
+"""Compact roster filters and labels based on stored academic groups."""
 
 from collections.abc import Iterable
 
@@ -21,7 +21,7 @@ def roster_caption(roster: TeachingRoster, groups: Iterable[AcademicGroup]) -> s
     return roster.name + (f" · {suffix}" if suffix else "")
 
 
-class LessonSelector(QComboBox):
+class BoundedComboBox(QComboBox):
     """A keyboard-selectable, scrollable popup that stays inside the display."""
 
     visible_rows = 10

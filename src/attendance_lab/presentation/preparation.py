@@ -13,10 +13,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMenu,
-    QPushButton,
     QScrollArea,
     QSpinBox,
     QTabWidget,
@@ -25,8 +22,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from attendance_lab.presentation.choice_table import group_rows, group_table, student_context_table
 from attendance_lab.presentation.common import guarded, plain_label
-from attendance_lab.presentation.import_students import ImportPreviewDialog
+from attendance_lab.presentation.import_students import ImportPreviewDialog as ImportPreviewDialog
 
 
 class FormDialog(QDialog):
@@ -72,23 +70,6 @@ def spin(low, high, value):
     return control
 
 
-def choices(items, selected=()):
-    control = QListWidget()
-    for text, key in items:
-        item = QListWidgetItem(text, control)
-        item.setData(Qt.ItemDataRole.UserRole, key)
-        item.setCheckState(Qt.CheckState.Checked if key in selected else Qt.CheckState.Unchecked)
-    return control
-
-
-def checked(control):
-    return {
-        control.item(i).data(Qt.ItemDataRole.UserRole)
-        for i in range(control.count())
-        if control.item(i).checkState() == Qt.CheckState.Checked
-    }
-
-
 class PreparationPane(QWidget):
     def __init__(self, service, changed, schedule, students, parent=None):
         super().__init__(parent)
@@ -100,9 +81,6 @@ class PreparationPane(QWidget):
             )
         )
         toolbar = QHBoxLayout()
-        button = QPushButton("Импорт студентов CSV…")
-        button.clicked.connect(self.import_csv)
-        toolbar.addWidget(button)
         catalogs = QToolButton()
         catalogs.setText("Учебные справочники…")
         catalogs.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -139,9 +117,6 @@ class PreparationPane(QWidget):
         dialog.finish()
         if dialog.exec() == QDialog.DialogCode.Accepted:
             guarded(self, lambda: (save(), self.changed()))
-
-    def import_csv(self):
-        ImportPreviewDialog(self.service, self.changed, self).exec()
 
     def year_dialog(self):
         dialog = FormDialog("Учебный год", self)
@@ -284,25 +259,20 @@ class PreparationPane(QWidget):
         dialog = FormDialog("Группы дисциплины", self)
         discipline = combo([(d.name, d.id) for d in self.service.list_disciplines()])
         year = combo([(str(y.start_year), y.id) for y in self.api.list_years()])
-        groups = QListWidget()
+        groups = group_table()
 
         def load_groups():
-            groups.clear()
             selected = (
                 self.api.get_discipline_groups(discipline.currentData(), year.currentData())
                 if discipline.currentData() is not None and year.currentData() is not None
                 else set()
             )
-            for group in self.api.list_groups():
-                if group.academic_year_id != year.currentData():
-                    continue
-                item = QListWidgetItem(
-                    f"{group.specialty_name} · курс {group.course} · группа {group.number}", groups
-                )
-                item.setData(Qt.ItemDataRole.UserRole, group.id)
-                item.setCheckState(
-                    Qt.CheckState.Checked if group.id in selected else Qt.CheckState.Unchecked
-                )
+            groups.replace_rows(
+                group_rows(
+                    g for g in self.api.list_groups() if g.academic_year_id == year.currentData()
+                ),
+                selected,
+            )
 
         discipline.currentIndexChanged.connect(load_groups)
         year.currentIndexChanged.connect(load_groups)
@@ -313,7 +283,7 @@ class PreparationPane(QWidget):
         self.run_form(
             dialog,
             lambda: self.api.set_discipline_groups(
-                discipline.currentData(), year.currentData(), checked(groups)
+                discipline.currentData(), year.currentData(), groups.selected_ids()
             ),
         )
 
@@ -332,18 +302,8 @@ class PreparationPane(QWidget):
         )
         mode = combo([("Целые группы", "groups"), ("Выбранные студенты одной группы", "students")])
         duration = spin(1, 2, 1)
-        groups = choices(
-            [
-                (f"{g.specialty_name} · {g.course} курс · {g.number}", g.id)
-                for g in self.api.list_groups()
-            ]
-        )
-        students = choices(
-            [
-                (f"{s.full_name} · {s.record_book_number} · {s.group_number}", s.student_id)
-                for s in self.api.list_student_contexts()
-            ]
-        )
+        groups = group_table(self.api.list_groups())
+        students = student_context_table(self.api.list_student_contexts())
         existing = combo(
             [("Новый состав", None)]
             + [(f"{r.name} · семестр {r.semester}", r) for r in self.api.list_rosters()]
@@ -360,14 +320,8 @@ class PreparationPane(QWidget):
             kind.setCurrentIndex(kind.findData(value.kind))
             mode.setCurrentIndex(mode.findData(value.mode))
             duration.setValue(value.duration)
-            for control, ids in ((groups, value.group_ids), (students, value.student_ids)):
-                for i in range(control.count()):
-                    item = control.item(i)
-                    item.setCheckState(
-                        Qt.CheckState.Checked
-                        if item.data(Qt.ItemDataRole.UserRole) in ids
-                        else Qt.CheckState.Unchecked
-                    )
+            groups.set_checked(value.group_ids)
+            students.set_checked(value.student_ids)
 
         existing.currentIndexChanged.connect(load_roster)
         for label, control in [
@@ -393,8 +347,8 @@ class PreparationPane(QWidget):
                 kind.currentData(),
                 2 if kind.currentData() == "lab" else duration.value(),
                 mode.currentData(),
-                checked(groups),
-                checked(students),
+                groups.selected_ids(),
+                students.selected_ids(),
                 roster_id=existing.currentData().id if existing.currentData() else None,
             ),
         )

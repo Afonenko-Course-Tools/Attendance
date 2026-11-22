@@ -10,6 +10,8 @@ from test_course_observed_students import lab, scan  # noqa: F401
 from test_course_workflow import course  # noqa: F401
 
 from attendance_lab.application.controller import AttendanceController
+from attendance_lab.application.journal import DEFAULT_REASON
+from attendance_lab.domain.redesign import EXCUSED_ABSENCE_REASON
 from attendance_lab.infrastructure.csv_io import CsvFiles
 from attendance_lab.infrastructure.readers import DemoReader
 from attendance_lab.presentation.admin import MainWindow
@@ -102,6 +104,14 @@ def test_cell_marks_whole_lesson_without_dialog_or_switching_registration(
         assert not pane.tools["mark"].isEnabled()
         pane.mark_rectangle()
         assert len(service.redesign.list_manual_batches()) == 1
+        if action == "double_click":
+            QTest.mouseDClick(
+                pane.journal.viewport(), Qt.MouseButton.LeftButton, pos=rectangle.center()
+            )
+            app.processEvents()
+            assert pane.journal.item(0, 5).text() == "—"
+            assert pane.journal_feedback.text() == "Ручная отметка отменена."
+            assert not service.courses.attendance(selected_course.id, student_id, target.topic_id)
     finally:
         window.close()
 
@@ -136,5 +146,65 @@ def test_observed_fallback_cell_can_be_marked_without_enrolling_student(
         assert service.courses.list_students(selected_course.id) == []
         assert service.grading.students(selected_course.id) == ()
         assert window.tabs.currentWidget() is window.course_journal
+    finally:
+        window.close()
+
+
+def test_excused_absence_can_be_selected_and_is_shown_in_the_journal(course, tmp_path):  # noqa: F811
+    service, selected_course, roster = course
+    service.courses.schedule(selected_course.id, roster.id, 1, date(2026, 9, 1), 1)
+    _, window = journal_window(service, tmp_path)
+    try:
+        pane = window.course_workspace
+        pane.journal.setCurrentCell(0, 5)
+        pane.journal_reason.setCurrentIndex(pane.journal_reason.findData(EXCUSED_ABSENCE_REASON))
+        assert pane.tools["mark"].text() == "Отметить отсутствие"
+        pane.tools["mark"].trigger()
+        item = pane.journal.item(0, 5)
+        assert item.text() == "У" and EXCUSED_ABSENCE_REASON in item.toolTip()
+        assert pane.journal.item(0, pane.journal.columnCount() - 1).text() == "0"
+    finally:
+        window.close()
+
+
+def test_delete_clears_exact_selected_journal_cells_without_marking_empty_cells(course, tmp_path):  # noqa: F811
+    service, selected_course, roster = course
+    lessons = [
+        service.courses.schedule(selected_course.id, roster.id, n, date(2026, 9, n), 1)
+        for n in (1, 2)
+    ]
+    blocks = [service.redesign.get_block(lesson.block_id) for lesson in lessons]
+    app, window = journal_window(service, tmp_path)
+    try:
+        pane = window.course_workspace
+        table = pane.journal
+        selected = {
+            table.item(0, 5).data(Qt.ItemDataRole.UserRole),
+            table.item(1, 6).data(Qt.ItemDataRole.UserRole),
+        }
+        table.item(0, 5).setSelected(True)
+        table.item(1, 6).setSelected(True)
+        table.setFocus()
+        app.processEvents()
+        QTest.keyClick(table, Qt.Key.Key_Delete)
+        assert not service.redesign.list_manual_batches()
+
+        students = {s.student_id for s in service.courses.list_students(selected_course.id)}
+        targets = {
+            (student, pair) for student in students for block in blocks for pair in block.pair_ids
+        }
+        service.redesign.create_manual_batch(targets, DEFAULT_REASON)
+        window.refresh_evidence()
+        QTest.keyClick(table, Qt.Key.Key_Backspace)
+        [stored] = service.redesign.list_manual_batches()
+        cleared = {
+            (student, pair)
+            for lesson, block in zip(lessons, blocks, strict=True)
+            for student in students
+            if (student, lesson.topic_id) in selected
+            for pair in block.pair_ids
+        }
+        assert set(stored.active_targets) == targets - cleared
+        assert "Ручная отметка отменена" in pane.journal_feedback.text()
     finally:
         window.close()
