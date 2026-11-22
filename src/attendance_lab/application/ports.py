@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
+from attendance_lab.application.operations import OperationRepository
 from attendance_lab.domain.models import Discipline, Lesson, Student
 
 
@@ -23,7 +24,18 @@ class ScanRecord:
     last_seen: datetime
 
 
-class AttendanceRepository(Protocol):
+@dataclass(frozen=True, slots=True)
+class BindingChangeRecord:
+    id: int
+    uid: str
+    previous_student_id: str | None
+    student_id: str | None
+    changed_at: datetime
+    correction: bool
+    scope: str
+
+
+class AttendanceRepository(OperationRepository, Protocol):
     """Every mutating use case must hold one transaction until durable commit."""
 
     def transaction(self, *, write: bool = True) -> AbstractContextManager[None]: ...
@@ -41,6 +53,7 @@ class AttendanceRepository(Protocol):
     def get_lesson_roster(self, lesson_id: int) -> set[str]: ...
     def put_lesson_roster(self, lesson_id: int, student_ids: set[str]) -> None: ...
     def list_cards(self) -> list[CardRecord]: ...
+    def list_binding_changes(self, uid: str | None = None) -> list[BindingChangeRecord]: ...
     def get_card(self, uid: str) -> CardRecord | None: ...
     def put_card(self, card: CardRecord) -> None: ...
     def add_binding_change(

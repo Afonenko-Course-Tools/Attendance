@@ -2,7 +2,8 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QItemSelectionModel, Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -13,14 +14,20 @@ from PySide6.QtWidgets import (
 )
 
 from attendance_lab.application.service import AttendanceService
+from attendance_lab.domain.models import LessonCounts
 from attendance_lab.presentation.common import (
     STATES,
+    TableCell,
+    TableValue,
     actions,
+    bind_table_clear,
     fill_table,
+    filter_table,
     guarded,
     lesson_label,
     plain_label,
     private_message,
+    search_field,
     selected_key,
     table,
 )
@@ -29,6 +36,18 @@ from attendance_lab.presentation.dialogs import (
     LessonDialog,
     StudentSelectionDialog,
 )
+from attendance_lab.presentation.lesson_lifecycle import (
+    delete_lesson_dialog,
+    restore_lessons_dialog,
+)
+
+
+def _registration_counts(counts: LessonCounts) -> TableValue:
+    return TableValue(
+        f"Карт: {counts.unique_cards} · Студентов: {counts.identified_students}\n"
+        f"Без сопоставления: {counts.unidentified_cards}",
+        (counts.unique_cards, counts.identified_students, counts.unidentified_cards),
+    )
 
 
 class SchedulePane(QWidget):
@@ -76,7 +95,10 @@ class SchedulePane(QWidget):
                 "Состояние",
                 "Ожидаемый состав",
                 "Регистрация",
-            )
+            ),
+            name="source-schedule",
+            keys=("id", "date", "title", "room", "state", "roster", "registration"),
+            sortable=True,
         )
         for column, tooltip in (
             (5, "Заранее назначенные студенты. Этот состав используется для учёта пропусков."),
@@ -96,12 +118,36 @@ class SchedulePane(QWidget):
                 ("Изменить занятие", lambda: self.edit_lesson(True)),
                 ("Состав выбранных занятий…", self.lesson_rosters),
                 ("Открыть регистрацию", self._open),
+            )
+        )
+        layout.addLayout(
+            actions(
                 ("Приватный журнал", self._logs),
+                ("Удалить выбранное…", self.delete_selected),
+                (
+                    "Удалённые занятия…",
+                    lambda: restore_lessons_dialog(self, self.service, self.changed),
+                ),
             )
         )
         self.lessons.setToolTip(
-            "Выбор строки — просмотр; регистрация — по кнопке. Несколько занятий: Ctrl / Shift."
+            "Двойной клик — редактировать. Delete или Backspace — запросить удаление одного занятия. "
+            "Выбор нескольких занятий — Ctrl или Shift."
         )
+        bind_table_clear(self.lessons, self.delete_selected_with_key)
+        self.search = search_field(
+            "Дата, название, аудитория или состояние · F3", name="Поиск занятия"
+        )
+        self.search.textChanged.connect(self.filter_rows)
+        self.search_shortcut = QShortcut(QKeySequence("F3"), self)
+        self.search_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.search_shortcut.activated.connect(self.focus_search)
+        layout.addWidget(self.search)
+        self.matches = plain_label()
+        self.matches.hide()
+        layout.addWidget(self.matches)
+        self.lessons.itemDoubleClicked.connect(lambda *_: self.edit_lesson(True))
+        self.lessons.model().layoutChanged.connect(self.filter_rows)
         layout.addWidget(self.lessons, 1)
         self.discipline.currentIndexChanged.connect(lambda *_: self.refresh_lessons())
 
@@ -119,8 +165,15 @@ class SchedulePane(QWidget):
         self.refresh_lessons()
 
     def refresh_lessons(self) -> None:
+        selected_ids = {
+            index.data(Qt.ItemDataRole.UserRole)
+            for index in self.lessons.selectionModel().selectedRows()
+            if not self.lessons.isRowHidden(index.row())
+        }
         discipline_id = self.discipline.currentData()
-        lessons = self.service.list_lessons(discipline_id) if discipline_id is not None else []
+        lessons = (
+            self.service.list_source_lessons(discipline_id) if discipline_id is not None else []
+        )
         discipline = next(
             (d for d in self.service.list_disciplines() if d.id == discipline_id), None
         )
@@ -136,37 +189,71 @@ class SchedulePane(QWidget):
             [
                 (
                     lesson.id,
-                    lesson_label(lesson),
+                    TableValue(lesson_label(lesson), (lesson.starts_at, lesson.ends_at)),
                     lesson.title,
                     lesson.room,
                     STATES[lesson.state],
-                    f"{counts.expected_students} чел. · "
-                    + ("зафиксирован" if lesson.roster_fixed else "из дисциплины"),
-                    f"Карт: {counts.unique_cards} · Студентов: {counts.identified_students}\n"
-                    f"Без сопоставления: {counts.unidentified_cards}",
+                    TableValue(
+                        f"{counts.expected_students} чел. · "
+                        + ("зафиксирован" if lesson.roster_fixed else "из дисциплины"),
+                        counts.expected_students,
+                    ),
+                    _registration_counts(counts),
                 )
                 for lesson in lessons
                 for counts in [self.service.lesson_counts(lesson.id)]
             ],
             [lesson.id for lesson in lessons],
         )
+        self.filter_rows()
+        for row in range(self.lessons.rowCount()):
+            index = self.lessons.model().index(row, 0)
+            if index.data(
+                Qt.ItemDataRole.UserRole
+            ) in selected_ids and not self.lessons.isRowHidden(row):
+                self.lessons.selectionModel().select(
+                    index,
+                    QItemSelectionModel.SelectionFlag.Select
+                    | QItemSelectionModel.SelectionFlag.Rows,
+                )
+        self.lessons.resizeRowsToContents()
+
+    def focus_search(self) -> None:
+        self.search.setFocus()
+        self.search.selectAll()
+
+    def filter_rows(self, *_) -> None:
+        query = self.search.text()
+        count = filter_table(self.lessons, query, columns=(0, 1, 2, 3, 4))
+        selection = self.lessons.selectionModel()
+        for index in selection.selectedRows():
+            if self.lessons.isRowHidden(index.row()):
+                selection.select(
+                    index,
+                    QItemSelectionModel.SelectionFlag.Deselect
+                    | QItemSelectionModel.SelectionFlag.Rows,
+                )
+        self.matches.setText(f"Показано {count} из {self.lessons.rowCount()}")
+        self.matches.setVisible(bool(query.strip()))
 
     def update_counts(self, lesson_id: int | None = None) -> None:
         """Update committed counts without resetting the operator's selection."""
+        sorting = self.lessons.isSortingEnabled()
+        self.lessons.setSortingEnabled(False)
         for row in range(self.lessons.rowCount()):
             key = self.lessons.item(row, 0)
             if key is None:
                 continue
-            current_id = int(key.text())
+            current_id = key.data(Qt.ItemDataRole.UserRole)
             if lesson_id is not None and current_id != lesson_id:
                 continue
             counts = self.service.lesson_counts(current_id)
             item = self.lessons.item(row, 6)
-            if item is not None:
-                item.setText(
-                    f"Карт: {counts.unique_cards} · Студентов: {counts.identified_students}\n"
-                    f"Без сопоставления: {counts.unidentified_cards}"
-                )
+            if isinstance(item, TableCell):
+                value = _registration_counts(counts)
+                item.order = value.order
+                item.setText(value.text)
+        self.lessons.setSortingEnabled(sorting)
         self.lessons.resizeRowsToContents()
 
     def selected_lesson_id(self) -> int | None:
@@ -230,7 +317,11 @@ class SchedulePane(QWidget):
             self.changed()
             for index in range(self.lessons.rowCount()):
                 item = self.lessons.item(index, 0)
-                if item is not None and item.text() == str(saved.id):
+                if (
+                    item is not None
+                    and item.data(Qt.ItemDataRole.UserRole) == saved.id
+                    and not self.lessons.isRowHidden(index)
+                ):
                     self.lessons.selectRow(index)
                     break
             overlaps = self.service.overlapping_lessons(saved)
@@ -267,6 +358,7 @@ class SchedulePane(QWidget):
         lesson_ids = [
             int(index.data(Qt.ItemDataRole.UserRole))
             for index in self.lessons.selectionModel().selectedRows()
+            if not self.lessons.isRowHidden(index.row())
         ]
         if not lesson_ids:
             private_message(
@@ -298,3 +390,10 @@ class SchedulePane(QWidget):
             self.changed()
 
         guarded(self, save)
+
+    def delete_selected(self):
+        delete_lesson_dialog(self, self.service, self.selected_lesson_id(), self.changed)
+
+    def delete_selected_with_key(self):
+        if len(self.lessons.selectionModel().selectedRows()) == 1:
+            self.delete_selected()

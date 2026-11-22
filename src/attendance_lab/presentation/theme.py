@@ -11,7 +11,7 @@ def apply_light_theme(app: QApplication) -> None:
     app.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
     app.styleHints().setColorScheme(Qt.ColorScheme.Light)
     app.setStyle("Fusion")
-    app.setFont(QFont("Arial", 10))
+    app.setFont(QFont("Arial", 12))
     palette = QPalette()
     colors = {
         QPalette.ColorRole.Window: "#f3f6fa",

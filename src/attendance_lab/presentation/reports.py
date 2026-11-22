@@ -1,10 +1,11 @@
 """Attendance projection and explicit, filtered exports."""
 
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -23,13 +24,16 @@ from attendance_lab.domain.models import AttendanceReport
 from attendance_lab.presentation.common import (
     actions,
     fill_table,
+    filter_table,
     guarded,
     lesson_label,
     local_time,
     plain_label,
+    search_field,
     table,
 )
 from attendance_lab.presentation.dialogs import ExportOptionsDialog
+from attendance_lab.presentation.table_columns import TableColumns
 
 
 class ReportsPane(QWidget):
@@ -74,7 +78,12 @@ class ReportsPane(QWidget):
         self.notice = plain_label(wrap=True)
         self.notice.setObjectName("Muted")
         layout.addWidget(self.notice)
-        self.matrix = table(("ID студента", "ФИО", "Группа"))
+        self.search = search_field("ФИО, группа или ID студента")
+        layout.addWidget(self.search)
+        self.matrix = table(("ID студента", "ФИО", "Группа"), sortable=True)
+        self.columns = TableColumns(self.matrix, "attendance-report", keys=self.column_keys)
+        self.search.textChanged.connect(self.filter_rows)
+        self.matrix.model().layoutChanged.connect(self.filter_rows)
         layout.addWidget(self.matrix, 1)
         legend = plain_label(
             "Присутствовал — сохранено предъявление  ·  Нет отметки — занятие завершено  ·  "
@@ -188,12 +197,13 @@ class ReportsPane(QWidget):
                     label += " *"
                 values.append(label)
             rows.append(values)
-        fill_table(self.matrix, rows, [row.student.id for row in report.rows])
+        fill_table(self.matrix, rows, [row.student.id for row in report.rows], restore_sort=False)
         for i, row in enumerate(report.rows):
             for j, cell in enumerate(row.cells):
                 item = self.matrix.item(i, j + 3)
                 assert item is not None
                 item.setBackground(QColor(colors[cell.state]))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setToolTip(
                     (
                         local_time(cell.first_seen, report.lessons[j].timezone)
@@ -206,6 +216,9 @@ class ReportsPane(QWidget):
             header = self.matrix.horizontalHeaderItem(index + 3)
             assert header is not None
             header.setToolTip(lesson_label(lesson))
+        self.columns.restore_visibility()
+        self.matrix.setSortingEnabled(True)
+        self.filter_rows()
         warning = (
             f"Несопоставленных карт: {report.unknown_count}. Сопоставление не завершено; таблица может измениться. "
             if report.unknown_count
@@ -215,6 +228,13 @@ class ReportsPane(QWidget):
             warning
             + f"Студентов: {len(report.rows)} · Занятий: {len(report.lessons)}. * — посещение вне состава."
         )
+
+    def column_keys(self):
+        lessons = self.current_report.lessons if self.current_report else ()
+        return ("id", "student", "group", *(f"pair-{lesson.id}" for lesson in lessons))
+
+    def filter_rows(self, *_):
+        filter_table(self.matrix, self.search.text(), columns=(0, 1, 2))
 
     def export(self, kind: str) -> None:
         if self.current_report is None:
@@ -227,6 +247,16 @@ class ReportsPane(QWidget):
         )
         if filename:
             snapshot = self.current_report
+            if self.search.text().strip():
+                visible = {
+                    item.data(Qt.ItemDataRole.UserRole)
+                    for row in range(self.matrix.rowCount())
+                    if not self.matrix.isRowHidden(row)
+                    and (item := self.matrix.item(row, 0)) is not None
+                }
+                snapshot = replace(
+                    snapshot, rows=tuple(row for row in snapshot.rows if row.student.id in visible)
+                )
             guarded(
                 self,
                 lambda: self.files.export_report(

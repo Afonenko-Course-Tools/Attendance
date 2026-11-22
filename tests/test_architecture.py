@@ -49,6 +49,7 @@ def has_prefix(module: str, prefix: str) -> bool:
                 "attendance_lab.presentation",
                 "attendance_lab.bootstrap",
                 "PySide6",
+                "reactivex",
                 "smartcard",
                 "sqlite3",
             ),
@@ -60,6 +61,7 @@ def has_prefix(module: str, prefix: str) -> bool:
                 "attendance_lab.presentation",
                 "attendance_lab.bootstrap",
                 "PySide6",
+                "reactivex",
                 "smartcard",
                 "sqlite3",
             ),
@@ -95,14 +97,18 @@ def test_public_window_cannot_access_service_controller_or_private_windows() -> 
     )
     violations = [
         module
-        for module in imported_modules(SOURCE / "presentation" / "public.py")
+        for path in (
+            SOURCE / "presentation" / "public.py",
+            SOURCE / "presentation" / "quick" / "public_projection.py",
+        )
+        for module in imported_modules(path)
         if any(has_prefix(module, prefix) for prefix in forbidden)
     ]
     assert not violations, f"Public presentation received private capabilities: {violations}"
 
 
 def test_bootstrap_composes_adapters_without_direct_device_or_database_access() -> None:
-    modules = imported_modules(SOURCE / "bootstrap.py")
+    modules = imported_modules(SOURCE / "bootstrap_workspace.py")
     assert any(has_prefix(module, "attendance_lab.application") for module in modules)
     assert any(has_prefix(module, "attendance_lab.infrastructure") for module in modules)
     assert any(has_prefix(module, "attendance_lab.presentation") for module in modules)

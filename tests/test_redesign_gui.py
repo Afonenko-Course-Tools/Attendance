@@ -1,6 +1,8 @@
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QApplication
 
 from attendance_lab.presentation.attendance_models import StudentModel, StudentProxy, StudentSearch
@@ -67,8 +69,6 @@ def test_cached_fuzzy_search_handles_reordered_words_and_yo():
 
 
 def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
-    from datetime import date
-
     from attendance_lab.application.controller import AttendanceController
     from attendance_lab.application.service import AttendanceService
     from attendance_lab.infrastructure.csv_io import CsvFiles
@@ -90,7 +90,7 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
             "Номер зачётки",
         ],
         [["1", "Семёнов Иван", "Физика", "Физика", "1", "2", "00123"]],
-        date.today().year,
+        datetime.now(ZoneInfo("Europe/Minsk")).date().year,
     )
     assert not plan.errors
     api.apply_import(plan)
@@ -100,7 +100,7 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
     roster = api.save_roster(
         discipline.id, year.id, 1, "Лаборатория", "lab", 2, "groups", {group.id}, set()
     )
-    block = api.schedule_block(roster.id, date.today(), 1)
+    block = api.schedule_block(roster.id, datetime.now(ZoneInfo("Europe/Minsk")).date(), 1)
     controller = AttendanceController(service, DemoReader)
     window = MainWindow(
         service,
@@ -113,6 +113,8 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
     window.event_timer.stop()
     window.show()
     app.processEvents()
+    assert not window.workspace.confirm_button.isVisible()
+    window.workspace.open_search()
     for width, height in ((980, 720), (1366, 768)):
         window.resize(width, height)
         app.processEvents()
@@ -128,6 +130,10 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
         workspace.show_context.setChecked(True)
         assert all(not workspace.table.isColumnHidden(column) for column in (1, 3, 4, 5))
         workspace.show_context.setChecked(False)
+    lesson_day = QDate(block.date.year, block.date.month, block.date.day)
+    window.history.date_from.setDate(lesson_day)
+    window.history.date_to.setDate(lesson_day)
+    window.history.refresh()
     assert window.history.model.contexts
     controller.connect_reader(controller.available_readers()[0])
     controller.open_session(block.id, {block.pair_ids[-1]})
@@ -143,7 +149,9 @@ def test_session_scan_preserves_finder_and_exact_selected_ids(tmp_path):
     assert window.workspace.search.cursorPosition() == 2
     assert window.workspace.selected_ids() == ids
     assert window.workspace.pinned_uid == "0011"
-    assert window.tabs.count() == 4
+    assert [
+        window.tabs.tabText(i) for i in range(window.tabs.count()) if window.tabs.isTabVisible(i)
+    ] == ["Занятие", "Посещаемость", "Оценки", "Курс"]
     window.workspace.pinned_uid = None
     window.workspace.pending_uids.clear()
     window.workspace.queue.clear()
@@ -261,6 +269,7 @@ def test_history_manual_revoke_restores_authoritative_baselines_and_selection(tm
     from datetime import UTC, datetime, timedelta
 
     from PySide6.QtCore import QItemSelectionModel
+    from PySide6.QtTest import QTest
 
     from attendance_lab.application.service import AttendanceService
     from attendance_lab.infrastructure.sqlite import SQLiteRepository
@@ -305,6 +314,33 @@ def test_history_manual_revoke_restores_authoritative_baselines_and_selection(tm
     assert {r.student.id: r.cells for r in pane.model.report.rows} == baseline
     assert pane.targets() == {(student.id, first.id)}
     assert not resets
+
+    service.redesign.create_manual_batch(
+        {
+            (student.id, first.id),
+            (student.id, second.id),
+            (other.id, first.id),
+            (other.id, second.id),
+        },
+        "Проверка выбранных ячеек",
+    )
+    pane.update_evidence()
+    other_row = next(
+        i for i, item in enumerate(pane.model.report.rows) if item.student.id == other.id
+    )
+    pane.matrix.selectionModel().select(
+        pane.proxy.mapFromSource(pane.model.index(other_row, 8)),
+        QItemSelectionModel.SelectionFlag.Select,
+    )
+    pane.activateWindow()
+    pane.matrix.setFocus()
+    app.processEvents()
+    QTest.keyClick(pane.matrix, Qt.Key.Key_Delete)
+    assert set(service.redesign.list_manual_batches()[-1].active_targets) == {
+        (student.id, second.id),
+        (other.id, first.id),
+    }
+    assert "Ручная отметка отменена" in pane.selection_count.text()
     pane.close()
     service.close()
 
@@ -312,13 +348,14 @@ def test_history_manual_revoke_restores_authoritative_baselines_and_selection(tm
 def test_enrollment_editor_preserves_current_selection_and_filters_year(monkeypatch):
     from PySide6.QtWidgets import QFormLayout, QWidget
 
-    from attendance_lab.presentation.preparation import PreparationPane, checked
+    from attendance_lab.domain.redesign import AcademicGroup
+    from attendance_lab.presentation.preparation import PreparationPane
 
     app = QApplication.instance() or QApplication([])
     groups = [
-        SimpleNamespace(id=11, academic_year_id=1, specialty_name="Ф", course=1, number=1),
-        SimpleNamespace(id=12, academic_year_id=1, specialty_name="Ф", course=1, number=2),
-        SimpleNamespace(id=21, academic_year_id=2, specialty_name="Ф", course=2, number=1),
+        AcademicGroup(11, 1, 1, 1, 1, specialty_name="Ф"),
+        AcademicGroup(12, 1, 1, 1, 2, specialty_name="Ф"),
+        AcademicGroup(21, 2, 1, 2, 1, specialty_name="Ф"),
     ]
     api = SimpleNamespace(
         list_years=lambda: [
@@ -345,14 +382,14 @@ def test_enrollment_editor_preserves_current_selection_and_filters_year(monkeypa
     discipline = dialog.form.itemAt(0, field).widget()
     year = dialog.form.itemAt(1, field).widget()
     choices = dialog.form.itemAt(2, field).widget()
-    assert choices.count() == 2
-    assert checked(choices) == {11}
+    assert choices.listing.rowCount() == 2
+    assert choices.selected_ids() == {11}
     discipline.setCurrentIndex(1)
-    assert checked(choices) == {12}
+    assert choices.selected_ids() == {12}
     year.setCurrentIndex(1)
-    assert choices.count() == 1
-    assert checked(choices) == set()
+    assert choices.listing.rowCount() == 1
+    assert choices.selected_ids() == set()
     discipline.setCurrentIndex(0)
-    assert checked(choices) == {21}
+    assert choices.selected_ids() == {21}
     pane.close()
     assert app is not None

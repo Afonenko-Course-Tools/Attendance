@@ -87,13 +87,13 @@ def test_public_feedback_colors_reset_with_identity(app):
     window = PublicWindow()
     window.set_lesson("Занятие", registration_open=True)
     window.display(PublicResult("success", "", "Студент"))
-    assert "#86efac" in window.headline.styleSheet()
-    assert "#86efac" in window.person.styleSheet()
+    assert "#166534" in window.headline.styleSheet()
+    assert "#166534" in window.person.styleSheet()
     window.display(PublicResult("repeat", "", "Студент"))
-    assert "#fde047" in window.headline.styleSheet()
-    assert "#fde047" in window.person.styleSheet()
+    assert "#854d0e" in window.headline.styleSheet()
+    assert "#854d0e" in window.person.styleSheet()
     window.show_idle()
-    assert "#ffffff" in window.headline.styleSheet()
+    assert "#173f72" in window.headline.styleSheet()
     assert window.person.text() == ""
     window.close()
 
@@ -153,12 +153,12 @@ def test_zero_roster_two_cards_and_attempt_colors_in_each_lesson(window):
     assert window.logs_window.feedback.isHidden()
     window.controller.simulate("00112233445566")
     window.process_events()
-    assert "#86efac" in window.public_window.headline.styleSheet()
+    assert "#166534" in window.public_window.headline.styleSheet()
     assert window.logs_window.log_table.item(0, 0).background().color().name() == "#dcfce7"
     # Another card belonging to a student already present is also a repeat.
     window.controller.simulate("00AABBCC")
     window.process_events()
-    assert "#fde047" in window.public_window.headline.styleSheet()
+    assert "#854d0e" in window.public_window.headline.styleSheet()
     assert "Повторная" in window.logs_window.feedback.text()
     assert window.logs_window.log_table.rowCount() == 2
 
@@ -217,6 +217,7 @@ def test_failed_commit_does_not_display_success_or_raw_details(window, monkeypat
     def fail(*args, **kwargs):
         raise OSError("00112233 /private/attendance.sqlite3 disk full")
 
+    original = window.service.record_scan
     monkeypatch.setattr(window.service, "record_scan", fail)
     window.controller.simulate("00112233")
     window.process_events()
@@ -225,6 +226,9 @@ def test_failed_commit_does_not_display_success_or_raw_details(window, monkeypat
     assert "Не удалось сохранить отметку" in text
     assert "00112233" not in text and "disk full" not in text
     assert "disk full" in window.device_status.text()
+    assert window.controller.blocked and window.controller.pending_count == 1
+    monkeypatch.setattr(window.service, "record_scan", original)
+    assert window.controller.retry_pending()
 
 
 def test_real_mode_has_no_simulator_field(app, tmp_path: Path):
@@ -272,7 +276,7 @@ def test_roster_assignment_applies_only_explicitly_selected_lessons(window, monk
 
     class AcceptedRoster(StudentSelectionDialog):
         def exec(self):
-            self.list_widget.item(0).setCheckState(Qt.CheckState.Checked)
+            self.students.listing.item(0, 0).setCheckState(Qt.CheckState.Checked)
             return QDialog.DialogCode.Accepted
 
     confirmations = []

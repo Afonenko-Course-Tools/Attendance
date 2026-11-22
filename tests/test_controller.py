@@ -54,6 +54,7 @@ def test_store_failure_never_becomes_public_success(setup, monkeypatch):
     def fail(*args):
         raise OSError("private UID 0012ABCD /private/database.sqlite3")
 
+    original = service.record_scan
     monkeypatch.setattr(service, "record_scan", fail)
     controller.simulate("0012ABCD")
     results = [e.result for e in controller.drain() if e.kind == "public"]
@@ -62,6 +63,9 @@ def test_store_failure_never_becomes_public_success(setup, monkeypatch):
     assert "0012ABCD" not in str(results[0])
     assert "/private" not in str(results[0])
     assert service.lesson_log(first.id) == []
+    assert controller.pending_count == 1 and controller.blocked
+    monkeypatch.setattr(service, "record_scan", original)
+    assert controller.retry_pending()
 
 
 def test_public_result_has_no_hardware_fields():

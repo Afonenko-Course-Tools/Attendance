@@ -1,10 +1,6 @@
 """Relational academic preparation, preview imports and fixed-slot scheduling."""
 
-import csv
-import hashlib
-import io
 from datetime import date
-from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -14,21 +10,21 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
     QDialogButtonBox,
-    QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QPushButton,
+    QMenu,
     QScrollArea,
     QSpinBox,
     QTabWidget,
-    QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from attendance_lab.presentation.common import actions, fill_table, guarded, plain_label, table
+from attendance_lab.presentation.choice_table import group_rows, group_table, student_context_table
+from attendance_lab.presentation.common import guarded, plain_label
+from attendance_lab.presentation.import_students import ImportPreviewDialog as ImportPreviewDialog
 
 
 class FormDialog(QDialog):
@@ -46,6 +42,8 @@ class FormDialog(QDialog):
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
+        self.buttons.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         self.save_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
@@ -72,226 +70,42 @@ def spin(low, high, value):
     return control
 
 
-def choices(items, selected=()):
-    control = QListWidget()
-    for text, key in items:
-        item = QListWidgetItem(text, control)
-        item.setData(Qt.ItemDataRole.UserRole, key)
-        item.setCheckState(Qt.CheckState.Checked if key in selected else Qt.CheckState.Unchecked)
-    return control
-
-
-def checked(control):
-    return {
-        control.item(i).data(Qt.ItemDataRole.UserRole)
-        for i in range(control.count())
-        if control.item(i).checkState() == Qt.CheckState.Checked
-    }
-
-
-class ImportPreviewDialog(FormDialog):
-    def __init__(self, service, changed, parent=None):
-        super().__init__("Импорт студентов — предварительная проверка", parent)
-        self.api, self.changed, self.plan = service.redesign, changed, None
-        self.specialty_aliases, self.profile_aliases, self.group_choices = {}, {}, {}
-        self.path = QLineEdit()
-        self.year = spin(2000, 2200, date.today().year)
-        self.encoding = combo([("UTF-8 BOM", "utf-8-sig"), ("Windows-1251", "cp1251")])
-        self.delimiter = combo(
-            [("Авто", None), ("Запятая", ","), ("Точка с запятой", ";"), ("Табуляция", "\t")]
-        )
-        self.form.addRow("Файл", self.path)
-        browse = QPushButton("Выбрать CSV…")
-        browse.clicked.connect(self.browse)
-        self.form.addRow(browse)
-        self.form.addRow("Начало учебного года", self.year)
-        self.form.addRow("Кодировка", self.encoding)
-        self.form.addRow("Разделитель", self.delimiter)
-        self.preview = table(
-            ("№", "ФИО", "Специальность", "Профиль", "Курс", "Группа", "Зачётная книжка")
-        )
-        self.form.addRow(self.preview)
-        self.note = QTextEdit()
-        self.note.setReadOnly(True)
-        self.form.addRow(self.note)
-        review = QPushButton("Проверить и показать изменения")
-        review.clicked.connect(lambda: guarded(self, self.review))
-        self.form.addRow(review)
-        resolve = QPushButton("Сопоставить названия и неоднозначные группы…")
-        resolve.clicked.connect(self.resolve)
-        self.form.addRow(resolve)
-        self.finish()
-        self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(False)
-        for control in (self.path, self.year, self.encoding, self.delimiter):
-            signal = (
-                control.textChanged
-                if isinstance(control, QLineEdit)
-                else control.valueChanged
-                if isinstance(control, QSpinBox)
-                else control.currentIndexChanged
-            )
-            signal.connect(self.invalidate)
-
-    def invalidate(self, *_):
-        self.plan = None
-        self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(False)
-
-    def browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, "CSV списка студентов", "", "CSV (*.csv)")
-        if path:
-            self.path.setText(path)
-
-    def review(self):
-        raw = Path(self.path.text()).read_bytes()
-        text = raw.decode(self.encoding.currentData())
-        if not text.strip():
-            raise ValueError("Файл пуст")
-        delimiter = self.delimiter.currentData()
-        if delimiter is None:
-            # The required single header row identifies the separator without
-            # confusing quoted commas or multiline student fields with columns.
-            try:
-                delimiter = csv.Sniffer().sniff(text.splitlines()[0], delimiters=";,\t").delimiter
-            except csv.Error as exc:
-                raise ValueError(
-                    "Не удалось определить разделитель CSV. Выберите его явно."
-                ) from exc
-        rows = list(
-            csv.reader(
-                io.StringIO(text, newline=""),
-                delimiter=delimiter,
-                strict=True,
-            )
-        )
-        if not rows:
-            raise ValueError("Файл пуст")
-        self.plan = self.api.preview_import(
-            rows[0],
-            rows[1:],
-            self.year.value(),
-            file_hash=hashlib.sha256(raw).hexdigest(),
-            specialty_aliases=self.specialty_aliases,
-            profile_aliases=self.profile_aliases,
-            group_choices=self.group_choices,
-        )
-        fill_table(
-            self.preview,
-            [
-                tuple(
-                    str(getattr(row, key))
-                    for key in (
-                        "ordinal",
-                        "full_name",
-                        "specialty",
-                        "profile",
-                        "course",
-                        "group_number",
-                        "record_book_number",
-                    )
-                )
-                for row in self.plan.rows
-            ],
-            [row.source_row for row in self.plan.rows],
-        )
-        self.note.setPlainText("\n".join((*self.plan.errors, *self.plan.changes)))
-        self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(not self.plan.errors)
-
-    def resolve(self):
-        if self.plan is None:
-            return
-        dialog = FormDialog("Явное сопоставление импорта", self)
-        use_specialty = QCheckBox("Сопоставить название специальности")
-        source_specialty = combo(
-            [(name, name) for name in sorted({r.specialty for r in self.plan.rows})]
-        )
-        specialty = combo([(s.name, s.id) for s in self.api.list_specialties()])
-        use_profile = QCheckBox("Сопоставить название профиля")
-        source_profile = combo(
-            [(name, name) for name in sorted({r.profile for r in self.plan.rows})]
-        )
-        profile = combo([(p.name, p) for p in self.api.list_profiles()])
-        use_group = QCheckBox("Выбрать группу для строки файла")
-        source_row = combo(
-            [
-                (f"Строка {r.source_row}: {r.full_name} · гр. {r.group_number}", r.source_row)
-                for r in self.plan.rows
-            ]
-        )
-        group = combo(
-            [
-                (
-                    f"{g.specialty_name} · курс {g.course} · гр. {g.number} · {g.variant_key} · ID {g.id}",
-                    g.id,
-                )
-                for g in self.api.list_groups()
-            ]
-        )
-        for label, control in [
-            ("", use_specialty),
-            ("В файле", source_specialty),
-            ("В каталоге", specialty),
-            ("", use_profile),
-            ("В файле", source_profile),
-            ("В каталоге", profile),
-            ("", use_group),
-            ("Строка", source_row),
-            ("Группа", group),
-        ]:
-            dialog.form.addRow(label, control)
-        dialog.finish()
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            if use_specialty.isChecked() and specialty.currentData() is not None:
-                self.specialty_aliases[source_specialty.currentData()] = specialty.currentData()
-            if use_profile.isChecked() and profile.currentData() is not None:
-                selected = profile.currentData()
-                self.profile_aliases[(selected.specialty_id, source_profile.currentData())] = (
-                    selected.id
-                )
-            if use_group.isChecked() and group.currentData() is not None:
-                self.group_choices[source_row.currentData()] = group.currentData()
-            guarded(self, self.review)
-
-    def accept(self):
-        if self.plan is not None and not self.plan.errors:
-
-            def apply():
-                self.api.apply_import(self.plan)
-                self.changed()
-                super(ImportPreviewDialog, self).accept()
-
-            guarded(self, apply)
-
-
 class PreparationPane(QWidget):
     def __init__(self, service, changed, schedule, students, parent=None):
         super().__init__(parent)
         self.service, self.api, self.changed = service, service.redesign, changed
         layout = QVBoxLayout(self)
         layout.addWidget(
-            plain_label("Подготовка учебного года, семестровых составов и расписания", wrap=True)
-        )
-        layout.addLayout(
-            actions(
-                ("Импорт 7 колонок…", self.import_csv),
-                ("Учебный год…", self.year_dialog),
-                ("Группа…", self.group_dialog),
-                ("Редактор студента…", self.student_dialog),
-                ("Каталоги…", self.catalog_dialog),
+            plain_label(
+                "Общий учебный список: импорт не добавляет группы в курс автоматически.", wrap=True
             )
         )
-        layout.addLayout(
-            actions(
-                ("Группы дисциплины…", self.enrollment_dialog),
-                ("Состав семестра…", self.roster_dialog),
-                ("Копировать состав…", self.copy_dialog),
-                ("Запланировать блок…", self.block_dialog),
-            )
-        )
+        toolbar = QHBoxLayout()
+        catalogs = QToolButton()
+        catalogs.setText("Учебные справочники…")
+        catalogs.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(catalogs)
+        for label, callback in [
+            ("Учебный год…", self.year_dialog),
+            ("Группа…", self.group_dialog),
+            ("Студент…", self.student_dialog),
+            ("Специальности и профили…", self.catalog_dialog),
+        ]:
+            menu.addAction(label, callback)
+        catalogs.setMenu(menu)
+        toolbar.addWidget(catalogs)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
         self.summary = plain_label(wrap=True)
         layout.addWidget(self.summary)
         self.tabs = QTabWidget()
-        for pane, label in ((schedule, "Дисциплины и занятия"), (students, "Студенты и карты")):
-            self.tabs.addTab(pane, label)
+        self.schedule_window = QDialog(self)
+        self.schedule_window.setWindowTitle("Исходные занятия — расписание и история")
+        self.schedule_window.resize(1000, 700)
+        self.schedule_window.setMinimumSize(900, 600)
+        source_layout = QVBoxLayout(self.schedule_window)
+        source_layout.addWidget(schedule)
+        self.tabs.addTab(students, "Учебный список")
         layout.addWidget(self.tabs)
 
     def refresh(self):
@@ -303,9 +117,6 @@ class PreparationPane(QWidget):
         dialog.finish()
         if dialog.exec() == QDialog.DialogCode.Accepted:
             guarded(self, lambda: (save(), self.changed()))
-
-    def import_csv(self):
-        ImportPreviewDialog(self.service, self.changed, self).exec()
 
     def year_dialog(self):
         dialog = FormDialog("Учебный год", self)
@@ -448,25 +259,20 @@ class PreparationPane(QWidget):
         dialog = FormDialog("Группы дисциплины", self)
         discipline = combo([(d.name, d.id) for d in self.service.list_disciplines()])
         year = combo([(str(y.start_year), y.id) for y in self.api.list_years()])
-        groups = QListWidget()
+        groups = group_table()
 
         def load_groups():
-            groups.clear()
             selected = (
                 self.api.get_discipline_groups(discipline.currentData(), year.currentData())
                 if discipline.currentData() is not None and year.currentData() is not None
                 else set()
             )
-            for group in self.api.list_groups():
-                if group.academic_year_id != year.currentData():
-                    continue
-                item = QListWidgetItem(
-                    f"{group.specialty_name} · курс {group.course} · группа {group.number}", groups
-                )
-                item.setData(Qt.ItemDataRole.UserRole, group.id)
-                item.setCheckState(
-                    Qt.CheckState.Checked if group.id in selected else Qt.CheckState.Unchecked
-                )
+            groups.replace_rows(
+                group_rows(
+                    g for g in self.api.list_groups() if g.academic_year_id == year.currentData()
+                ),
+                selected,
+            )
 
         discipline.currentIndexChanged.connect(load_groups)
         year.currentIndexChanged.connect(load_groups)
@@ -477,7 +283,7 @@ class PreparationPane(QWidget):
         self.run_form(
             dialog,
             lambda: self.api.set_discipline_groups(
-                discipline.currentData(), year.currentData(), checked(groups)
+                discipline.currentData(), year.currentData(), groups.selected_ids()
             ),
         )
 
@@ -496,18 +302,8 @@ class PreparationPane(QWidget):
         )
         mode = combo([("Целые группы", "groups"), ("Выбранные студенты одной группы", "students")])
         duration = spin(1, 2, 1)
-        groups = choices(
-            [
-                (f"{g.specialty_name} · {g.course} курс · {g.number}", g.id)
-                for g in self.api.list_groups()
-            ]
-        )
-        students = choices(
-            [
-                (f"{s.full_name} · {s.record_book_number} · {s.group_number}", s.student_id)
-                for s in self.api.list_student_contexts()
-            ]
-        )
+        groups = group_table(self.api.list_groups())
+        students = student_context_table(self.api.list_student_contexts())
         existing = combo(
             [("Новый состав", None)]
             + [(f"{r.name} · семестр {r.semester}", r) for r in self.api.list_rosters()]
@@ -524,14 +320,8 @@ class PreparationPane(QWidget):
             kind.setCurrentIndex(kind.findData(value.kind))
             mode.setCurrentIndex(mode.findData(value.mode))
             duration.setValue(value.duration)
-            for control, ids in ((groups, value.group_ids), (students, value.student_ids)):
-                for i in range(control.count()):
-                    item = control.item(i)
-                    item.setCheckState(
-                        Qt.CheckState.Checked
-                        if item.data(Qt.ItemDataRole.UserRole) in ids
-                        else Qt.CheckState.Unchecked
-                    )
+            groups.set_checked(value.group_ids)
+            students.set_checked(value.student_ids)
 
         existing.currentIndexChanged.connect(load_roster)
         for label, control in [
@@ -557,8 +347,8 @@ class PreparationPane(QWidget):
                 kind.currentData(),
                 2 if kind.currentData() == "lab" else duration.value(),
                 mode.currentData(),
-                checked(groups),
-                checked(students),
+                groups.selected_ids(),
+                students.selected_ids(),
                 roster_id=existing.currentData().id if existing.currentData() else None,
             ),
         )

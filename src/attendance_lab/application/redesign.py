@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from attendance_lab.application.ports import CardRecord
 from attendance_lab.domain.models import AttendanceError, PublicResult
 from attendance_lab.domain.redesign import (
+    EXCUSED_ABSENCE_REASON,
     Evidence,
     ManualBatch,
     RegistrationSession,
@@ -100,8 +101,6 @@ class RedesignService(CatalogUseCases):
             or mode not in ("groups", "students")
         ):
             raise AttendanceError("Неверные параметры учебного состава.")
-        if kind == "lab" and duration != 2:
-            raise AttendanceError("Лабораторная занимает две пары.")
         groups = [g for g in self.list_groups(academic_year_id) if g.id in group_ids]
         if not groups or len(groups) != len(group_ids) or len({g.course for g in groups}) != 1:
             raise AttendanceError("Выберите группы одного года и курса.")
@@ -153,6 +152,15 @@ class RedesignService(CatalogUseCases):
 
     def copy_roster(self, roster_id: int, semester: int) -> TeachingRoster:
         r = self._roster(roster_id)
+        if r.mode == "students" and not r.group_ids:
+            # Historical conversion preserves an explicit (possibly empty)
+            # composition without inventing a group. An explicit copy must keep
+            # that composition; creating/editing a new roster still uses the
+            # stricter annual-group validation in save_roster.
+            if semester not in (1, 2):
+                raise AttendanceError("Неверные параметры учебного состава.")
+            with self.service.repository.transaction():
+                return self.store.rd_save_roster(replace(r, id=0, semester=semester))
         return self.save_roster(
             r.discipline_id,
             r.academic_year_id,
@@ -169,7 +177,10 @@ class RedesignService(CatalogUseCases):
         return [
             replace(c, subgroup=roster.name if roster.mode == "students" else "")
             for c in self.list_student_contexts(roster.academic_year_id)
-            if c.group_id in roster.group_ids
+            if (
+                c.group_id in roster.group_ids
+                or (roster.mode == "students" and not roster.group_ids)
+            )
             and (roster.mode == "groups" or c.student_id in roster.student_ids)
         ]
 
@@ -194,13 +205,12 @@ class RedesignService(CatalogUseCases):
         zone = ZoneInfo(validate_timezone(timezone))
         with self.service.repository.transaction():
             old = self.get_block(block_id) if block_id is not None else None
-            if old and (
-                any(self.service.get_lesson(p).roster_fixed for p in old.pair_ids)
-                or len(old.pair_ids) != roster.duration
-            ):
-                raise AttendanceError(
-                    "Зафиксированный блок нельзя переносить обычным редактированием."
-                )
+            if old:
+                reason = self.schedule_edit_reason(old)
+                if reason:
+                    raise AttendanceError(reason)
+                if len(old.pair_ids) != roster.duration:
+                    raise AttendanceError("Длительность блока отличается от длительности состава.")
             pairs = []
             for offset in range(roster.duration):
                 start, end = SLOTS[start_slot + offset - 1]
@@ -227,14 +237,26 @@ class RedesignService(CatalogUseCases):
                 )
             )
 
+    def schedule_edit_reason(self, block: ScheduledBlock) -> str:
+        if any(self.service.get_lesson(pair).state != "planned" for pair in block.pair_ids):
+            return "Регистрация на это занятие уже открывалась. Дата и время сохранены в истории."
+        if any(session.block_id == block.id for session in self.store.rd_sessions()):
+            return "У занятия есть история регистрации. Дата и время закрыты для изменения."
+        if any(self.pair_evidence(pair, include_excused=True) for pair in block.pair_ids):
+            return "У занятия есть сохранённые отметки. Дата и время закрыты для изменения."
+        return ""
+
     def list_blocks(
         self, on_date: date | None = None, discipline_id: int | None = None
     ) -> list[ScheduledBlock]:
         roster_ids = {r.id for r in self.list_rosters(discipline_id)}
+        deleted = self.service.lifecycle.deleted_ids()
         return [
             b
             for b in self.store.rd_blocks()
-            if (on_date is None or b.date == on_date) and b.roster_id in roster_ids
+            if (on_date is None or b.date == on_date)
+            and b.roster_id in roster_ids
+            and not deleted.intersection(b.pair_ids)
         ]
 
     def get_block(self, block_id: int) -> ScheduledBlock:
@@ -279,6 +301,8 @@ class RedesignService(CatalogUseCases):
 
     def open_session(self, block_id: int, target_pair_ids: set[int]) -> RegistrationSession:
         block = self.get_block(block_id)
+        for pair in block.pair_ids:
+            self.service.lifecycle.require_live(pair)
         if not target_pair_ids or not target_pair_ids <= set(block.pair_ids):
             raise AttendanceError("Выберите одну или обе пары блока.")
         with self.service.repository.transaction():
@@ -314,7 +338,18 @@ class RedesignService(CatalogUseCases):
                 self._fix_pair(pair_id)
             result = replace(session, target_pair_ids=tuple(sorted(block.pair_ids)))
             if result != session:
+                added = set(result.target_pair_ids) - set(session.target_pair_ids)
+                revoked = {
+                    (batch.id, student, pair)
+                    for batch in self.list_manual_batches()
+                    if batch.session_id == session.id and batch.revoked_at is None
+                    for student in {sid for sid, _ in batch.targets}
+                    - {sid for sid, _ in batch.active_targets}
+                    for pair in added
+                }
                 result = self.store.rd_save_session(result, audit=True)
+                if revoked:
+                    self.store.rd_revoke_targets(revoked, datetime.now(UTC))
                 active_pairs = {
                     p
                     for s in self.store.rd_sessions()
@@ -368,9 +403,7 @@ class RedesignService(CatalogUseCases):
             if session.closed_at:
                 raise AttendanceError("Регистрация закрыта.")
             existing = any(
-                b.session_id == session_id
-                and b.revoked_at is None
-                and any(s == student_id for s, p in b.targets)
+                b.session_id == session_id and any(s == student_id for s, _ in b.active_targets)
                 for b in self.list_manual_batches()
             )
             targets = (
@@ -381,6 +414,7 @@ class RedesignService(CatalogUseCases):
 
     def create_manual_batch(self, targets: set[tuple[str, int]], reason: str) -> ManualBatch:
         reason = required_text(reason, "Основание")
+        kind = "excused" if reason == EXCUSED_ABSENCE_REASON else "manual"
         with self.service.repository.transaction():
             active_blocks = {s.block_id for s in self.store.rd_sessions() if s.closed_at is None}
             current_pairs = {
@@ -398,7 +432,10 @@ class RedesignService(CatalogUseCases):
                 sorted(
                     (sid, pid)
                     for sid, pid in targets
-                    if not any(e.kind == "manual" and e.active for e in self.evidence(sid, pid))
+                    if not any(
+                        e.student_id == sid and e.kind == kind and e.active
+                        for e in self.pair_evidence(pid, include_excused=True)
+                    )
                 )
             )
             scheduled_pairs = {p for block in self.list_blocks() for p in block.pair_ids}
@@ -416,6 +453,99 @@ class RedesignService(CatalogUseCases):
             if batch.revoked_at is None:
                 self.store.rd_save_batch(replace(batch, revoked_at=datetime.now(UTC)))
 
+    def active_attendance(self, student_id: str, pair_ids):
+        return [
+            item
+            for pair_id in pair_ids
+            for item in self.pair_evidence(pair_id, include_excused=True)
+            if item.student_id == student_id and item.active
+        ]
+
+    def active_attendance_in(self, cells: set[tuple[str, int]]) -> list[Evidence]:
+        return [
+            item
+            for pair_id in sorted({pair for _, pair in cells})
+            for item in self.pair_evidence(pair_id, include_excused=True)
+            if item.student_id is not None and (item.student_id, pair_id) in cells and item.active
+        ]
+
+    @staticmethod
+    def manual_attendance_targets(student_id: str, evidence) -> set[tuple[int, str, int]]:
+        kinds = {item.kind for item in evidence}
+        kind = "manual" if "manual" in kinds else "excused"
+        return {
+            (item.batch_id, student_id, item.pair_id)
+            for item in evidence
+            if item.kind == kind and item.batch_id is not None
+        }
+
+    def revoke_manual_targets(self, targets: set[tuple[int, str, int]]) -> bool:
+        return bool(self.apply_manual_revocations(targets))
+
+    def apply_manual_revocations(
+        self, targets: set[tuple[int, str, int]]
+    ) -> frozenset[tuple[int, str, int]]:
+        with self.service.repository.transaction():
+            active = {
+                (item.batch_id, item.student_id, item.pair_id)
+                for item in self.active_attendance_in(
+                    {(student, pair) for _, student, pair in targets}
+                )
+                if item.batch_id is not None and item.student_id is not None
+            }
+            effective = targets & active
+            if effective:
+                self.store.rd_revoke_targets(effective, datetime.now(UTC))
+            return frozenset(effective)
+
+    def manual_clear_targets(
+        self, cells: set[tuple[str, int]]
+    ) -> tuple[set[tuple[int, str, int]], bool]:
+        evidence = self.active_attendance_in(cells)
+        targets = {
+            (item.batch_id, item.student_id, item.pair_id)
+            for item in evidence
+            if item.batch_id is not None and item.student_id is not None
+        }
+        return targets, any(item.uid is not None for item in evidence)
+
+    def clear_attendance_cells(self, cells: set[tuple[str, int]]) -> tuple[frozenset[str], str]:
+        """Revoke recorded manual grounds for selected student/pair cells atomically."""
+        with self.service.repository.transaction():
+            if self.service.lifecycle.deleted_ids().intersection(pair for _, pair in cells):
+                raise AttendanceError("Занятие удалено. Обновите список.")
+            for student_id in {student for student, _ in cells}:
+                self.service._student(student_id)
+            targets, has_card = self.manual_clear_targets(cells)
+            changed = self.apply_manual_revocations(targets)
+            if not changed:
+                return frozenset(), "card" if has_card else "empty"
+            return frozenset(
+                student for _, student, _ in changed
+            ), "revoke_card" if has_card else "revoke"
+
+    def clear_attendance(self, student_ids, pair_ids) -> tuple[frozenset[str], str]:
+        pairs = tuple(pair_ids)
+        return self.clear_attendance_cells(
+            {(student, pair) for student in student_ids for pair in pairs}
+        )
+
+    def toggle_attendance(self, student_id: str, pair_ids, *, allow_new: bool) -> str:
+        with self.service.repository.transaction():
+            evidence = self.active_attendance(student_id, pair_ids)
+            targets = self.manual_attendance_targets(student_id, evidence)
+            if targets:
+                self.revoke_manual_targets(targets)
+                return "revoke_card" if any(item.uid for item in evidence) else "revoke"
+            if evidence:
+                return "card"
+            if not allow_new:
+                return "unavailable"
+            from attendance_lab.application.journal import DEFAULT_REASON
+
+            self.create_manual_batch({(student_id, pair) for pair in pair_ids}, DEFAULT_REASON)
+            return "mark"
+
     def list_manual_batches(self) -> list[ManualBatch]:
         return self.store.rd_batches()
 
@@ -423,6 +553,10 @@ class RedesignService(CatalogUseCases):
         self.service._student(student_id)
         return [e for e in self.pair_evidence(pair_id) if e.student_id == student_id]
 
-    def pair_evidence(self, pair_id: int) -> list[Evidence]:
+    def pair_evidence(self, pair_id: int, *, include_excused: bool = False) -> list[Evidence]:
+        """Return attendance evidence, optionally including excused absences for the journal."""
         self.service.get_lesson(pair_id)
-        return self.store.rd_pair_evidence(pair_id)
+        evidence = self.store.rd_pair_evidence(pair_id)
+        return (
+            evidence if include_excused else [item for item in evidence if item.kind != "excused"]
+        )

@@ -69,6 +69,12 @@ class CatalogUseCases:
     def list_specialties(self) -> list[Specialty]:
         return self.store.rd_specialties()
 
+    def resolve_specialty_name(self, name: str) -> int | None:
+        return self.store.rd_resolve_specialty(name_key(name))
+
+    def resolve_profile_name(self, specialty_id: int, name: str) -> int | None:
+        return self.store.rd_resolve_profile(specialty_id, name_key(name))
+
     def list_profiles(self, specialty_id: int | None = None) -> list[Profile]:
         return [
             p
@@ -175,6 +181,9 @@ class CatalogUseCases:
             "№": "внутренний № по списку",
             "специализация/профилизация": "профилизация",
             "№ зачётки": "номер зачётки",
+            "№ зачетки": "номер зачётки",
+            "номер зачетки": "номер зачётки",
+            "специализация / профилизация": "профилизация",
         }
         keys = tuple(name_key(h.lstrip("\ufeff").replace("\ufffc", "")) for h in headers)
         keys = tuple(aliases.get(key, key) for key in keys)
@@ -185,12 +194,19 @@ class CatalogUseCases:
                 "Необходимы семь колонок списка в указанном порядке; "
                 "дополнительно допускается «Средний балл всех сессий»."
             )
-        width = 8 if with_average else 7
-        if not rows:
-            errors.append("В CSV нет строк студентов.")
+        allowed_widths = (7, 8) if with_average else (7,)
+        expected_width = "7 или 8" if with_average else "7"
+        has_student_rows = False
         for source_row, values in enumerate(rows, 2):
-            if len(values) != width:
-                errors.append(f"Строка {source_row}: необходимо {width} полей.")
+            # Empty spreadsheet tails can contain delimiters or whitespace only.
+            if not any(value.strip() for value in values):
+                continue
+            has_student_rows = True
+            if len(values) not in allowed_widths:
+                errors.append(
+                    f"Строка {source_row}: получено {len(values)} полей, "
+                    f"ожидается {expected_width}."
+                )
                 continue
             try:
                 ordinal, course, group = (
@@ -219,6 +235,8 @@ class CatalogUseCases:
                 )
             except (AttendanceError, ValueError) as exc:
                 errors.append(f"Строка {source_row}: {exc}")
+        if not has_student_rows:
+            errors.append("В CSV нет строк студентов.")
         return parsed, errors
 
     def _resolve_preview(self, rows, year, specialty_aliases, profile_aliases, group_choices):

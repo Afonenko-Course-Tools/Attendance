@@ -11,6 +11,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from test_lesson_matching_workflow import window  # noqa: F401
 
+from attendance_lab.application.controller import PendingScansError
 from attendance_lab.infrastructure.readers import DEMO_READER_NAME
 
 
@@ -57,7 +58,7 @@ def select_student(workspace):
     assert workspace.matches.currentItem() is not None
 
 
-@pytest.mark.parametrize("size", [(980, 720), (1366, 768)])
+@pytest.mark.parametrize("size", [(980, 640), (980, 720), (1366, 768)])
 @pytest.mark.parametrize("repeat", [False, True])
 def test_bound_tap_visible_with_name_binding_and_saved_time(registration, size, repeat):
     window, lesson, student = registration
@@ -198,6 +199,7 @@ def test_failed_scan_replaces_previous_success_with_explicit_error(registration,
     def fail_save(*args, **kwargs):
         raise OSError("Synthetic save failure")
 
+    original = window.service.record_scan
     monkeypatch.setattr(window.service, "record_scan", fail_save)
     tap(window, "A303")
     text = window.workspace.last_card_label.text().lower()
@@ -205,6 +207,8 @@ def test_failed_scan_replaces_previous_success_with_explicit_error(registration,
     assert student.full_name.lower() not in text
     assert window.service.lesson_log(lesson.id) == before
     assert_visible(window, window.workspace.last_card_label)
+    monkeypatch.setattr(window.service, "record_scan", original)
+    assert window.controller.retry_pending()
 
 
 def test_deferred_last_card_is_not_described_as_still_in_queue(registration):
@@ -237,9 +241,14 @@ def test_old_queued_failure_does_not_show_as_error_for_new_registration(registra
         title="Следующая синтетическая пара",
     )
     window.controller.simulate("A303")
+    original = window.service.record_scan
     monkeypatch.setattr(
         window.service, "record_scan", lambda *args: (_ for _ in ()).throw(OSError("synthetic"))
     )
+    with pytest.raises(PendingScansError):
+        window.controller.open_lesson(other.id)
+    monkeypatch.setattr(window.service, "record_scan", original)
+    assert window.controller.retry_pending()
     window.controller.open_lesson(other.id)
     window.process_events()
     assert "ошиб" not in window.workspace.last_card_label.text().lower()
@@ -269,7 +278,8 @@ def test_focused_search_stays_visible_after_window_shrinks(registration):
     workspace.match_scroll.verticalScrollBar().setValue(0)
     window.activateWindow()
     workspace.table.setFocus()
-    workspace.search.setFocus()
+    workspace.search_button.click()
+    assert workspace.search.isVisible()
     QApplication.processEvents()
     window.resize(980, 720)
     QTest.qWait(50)
